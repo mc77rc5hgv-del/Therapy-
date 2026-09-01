@@ -186,7 +186,159 @@ async def run():
     assert msg.sent_texts, "админ должен получить ответ от /admin"
     print("OK /admin: гейт по ADMIN_IDS работает")
 
+    await check_search()
+    await check_progress_and_quiz()
+    await check_self_check_and_comparison_table()
+
     print("\nВСЕ ПРОВЕРКИ ПРОЙДЕНЫ")
+
+
+async def check_search():
+    # структурные поля (названия разделов/тем) уже сейчас находимы поиском
+    results = th.search_therapy("ХОБЛ")
+    assert any(r["callback_data"] == "th:topic:respiratory:1.1" for r in results), results
+    assert th.search_therapy("   ") == []
+    empty = th.search_therapy("нет_такого_слова_вообще_xyz")
+    text = th.get_search_results_text("нет_такого_слова_вообще_xyz", empty)
+    assert "ничего не найдено" in text
+
+    # th:search_prompt -> ставит пользователя в TH_SEARCH_PENDING
+    tb.TH_SEARCH_PENDING.discard(ADMIN_ID)
+    cb = FakeCB("th:search_prompt")
+    await th.cb_therapy_search_prompt(cb)
+    assert ADMIN_ID in tb.TH_SEARCH_PENDING
+
+    # текстовый хендлер: пользователь НЕ в очереди -> SkipHandler, не отвечает
+    tb.TH_SEARCH_PENDING.discard(777)
+    msg = FakeMsg()
+    text_msg = type("M", (), {"from_user": FakeUser(777), "text": "ХОБЛ", "answer": msg.answer})()
+    try:
+        await tb.handle_therapy_search_query(text_msg)
+        raised = False
+    except Exception as e:
+        raised = type(e).__name__ == "SkipHandler"
+    assert raised, "ожидался SkipHandler для пользователя вне очереди поиска"
+    assert not msg.sent_texts
+
+    # пользователь В очереди -> получает результаты и снимается с очереди
+    tb.TH_SEARCH_PENDING.add(ADMIN_ID)
+    msg = FakeMsg()
+    text_msg = type("M", (), {"from_user": FakeUser(ADMIN_ID), "text": "ХОБЛ", "answer": msg.answer})()
+    await tb.handle_therapy_search_query(text_msg)
+    assert ADMIN_ID not in tb.TH_SEARCH_PENDING
+    text, markup = msg.sent_texts[-1]
+    assert "найдено" in text
+    assert "th:topic:respiratory:1.1" in kb_data(markup)
+    print("OK поиск: находит по структурным полям, гейт очереди работает, снимается после ответа")
+
+
+async def check_progress_and_quiz():
+    uid = 555
+    # ещё не открывал темы -> прогресс пустой
+    tb.stats["therapy_progress"].pop(str(uid), None)
+    text = th.get_therapy_progress_text(uid)
+    assert "Открыто тем: 0" in text
+
+    # открытие темы фиксируется
+    cb = FakeCB("th:topic:respiratory:1.1", uid=uid)
+    await th.cb_therapy_topic(cb)
+    text = th.get_therapy_progress_text(uid)
+    assert "Открыто тем: 1" in text
+
+    # без mcq -> кнопка теста не предлагается, только заглушка
+    cb = FakeCB("th:content:respiratory:1.1:tests", uid=uid)
+    await th.cb_therapy_content(cb)
+    _, markup = cb.message.sent_texts[-1]
+    assert not any(d.startswith("th:quiz_start:") for d in kb_data(markup))
+
+    # временно добавляем проверяемый вопрос, чтобы пройти реальный quiz end-to-end
+    topic = th.get_topic("respiratory", "1.1")
+    original_mcq = topic["tests"]["mcq"]
+    topic["tests"]["mcq"] = [
+        {"question": "Тестовый вопрос?", "options": ["Верно", "Неверно"], "correct_index": 0, "explanation": "потому что"},
+    ]
+    try:
+        cb = FakeCB("th:content:respiratory:1.1:tests", uid=uid)
+        await th.cb_therapy_content(cb)
+        _, markup = cb.message.sent_texts[-1]
+        quiz_start = next(d for d in kb_data(markup) if d.startswith("th:quiz_start:"))
+        assert quiz_start == "th:quiz_start:respiratory:1.1:topic_tests"
+
+        cb = FakeCB(quiz_start, uid=uid)
+        await th.cb_therapy_quiz_start(cb)
+        assert uid in th.THERAPY_QUIZ_SESSIONS
+        text, markup = cb.message.sent_texts[-1]
+        check_html(text)
+        assert "Вопрос 1/1" in text
+
+        cb = FakeCB("th:quiz_answer:0", uid=uid)
+        await th.cb_therapy_quiz_answer(cb)
+        assert uid not in th.THERAPY_QUIZ_SESSIONS, "сессия должна закрыться после последнего вопроса"
+        assert cb._answers[0][0] == "✅ Верно!"
+        text, markup = cb.message.sent_texts[-1]
+        assert "Тест завершён" in text and "1 из 1" in text
+
+        progress = tb.stats["therapy_progress"][str(uid)]["respiratory:1.1"]
+        assert progress["quiz_attempts"] == 1
+        assert progress["quiz_best_correct"] == 1 and progress["quiz_best_total"] == 1
+
+        # повторный неверный ответ -> alert с пояснением, сессия закрывается корректно
+        cb = FakeCB(quiz_start, uid=uid)
+        await th.cb_therapy_quiz_start(cb)
+        cb = FakeCB("th:quiz_answer:1", uid=uid)
+        await th.cb_therapy_quiz_answer(cb)
+        assert "потому что" in cb._answers[0][0]
+        assert cb._answers[0][1] is True  # show_alert=True для неверного ответа
+
+        # прерывание теста (🛑 Закончить) до ответа -> сессия закрывается, без исключения
+        cb = FakeCB(quiz_start, uid=uid)
+        await th.cb_therapy_quiz_start(cb)
+        cb = FakeCB("th:quiz_stop", uid=uid)
+        await th.cb_therapy_quiz_stop(cb)
+        assert uid not in th.THERAPY_QUIZ_SESSIONS
+        text, markup = cb.message.sent_texts[-1]
+        assert "прерван" in text
+    finally:
+        topic["tests"]["mcq"] = original_mcq
+
+    text = th.get_therapy_progress_text(uid)
+    assert "ХОБЛ" in text and "1/1" in text
+    print("OK прогресс + quiz-движок: открытие темы, полное прохождение, неверный ответ, прерывание")
+
+
+async def check_self_check_and_comparison_table():
+    topic = th.get_topic("digestive", "3.2")
+    original_self_check = topic["tests"]["self_check"]
+    topic["tests"]["self_check"] = ["Назови основные симптомы."]
+    try:
+        cb = FakeCB("th:content:digestive:3.2:tests")
+        await th.cb_therapy_content(cb)
+        text, markup = cb.message.sent_texts[-1]
+        check_html(text)
+        assert "Назови основные симптомы" in text
+        assert "готового ключа ответов пока нет" in text
+        assert not any(d.startswith("th:quiz_start:") for d in kb_data(markup))
+    finally:
+        topic["tests"]["self_check"] = original_self_check
+
+    section = th.get_section("cardiovascular")
+    original_table = section["comparison_table"]["table"]
+    section["comparison_table"]["table"] = {
+        "caption": "ИБС vs АГ vs ОРЛ",
+        "headers": ["ИБС", "АГ"],
+        "rows": [{"aspect": "Основной механизм", "values": ["Ишемия миокарда", "Повышение ОПСС"]}],
+    }
+    try:
+        cb = FakeCB("th:section_content:cardiovascular:comparison_table")
+        await th.cb_therapy_section_content(cb)
+        text, markup = cb.message.sent_texts[-1]
+        check_html(text)
+        assert "ИБС vs АГ vs ОРЛ" in text
+        assert "Ишемия миокарда" in text
+        assert "|" not in text, "сравнительная таблица не должна рендериться сырой markdown-таблицей"
+    finally:
+        section["comparison_table"]["table"] = original_table
+    print("OK self_check и структурированная сравнительная таблица рендерятся корректно")
 
 
 if __name__ == "__main__":

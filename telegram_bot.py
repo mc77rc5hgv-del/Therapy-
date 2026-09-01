@@ -22,6 +22,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
 from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, CallbackQuery, Message
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.dispatcher.event.bases import SkipHandler
 
 from repositories import knowledge
 
@@ -77,6 +78,7 @@ def load_stats() -> dict:
             data.setdefault("start_count", 0)
             data.setdefault("user_names", {})
             data.setdefault("user_username", {})
+            data.setdefault("therapy_progress", {})
             return data
         except (json.JSONDecodeError, OSError):
             logger.exception("Не удалось прочитать %s, статистика будет создана заново", STATS_FILE)
@@ -85,6 +87,7 @@ def load_stats() -> dict:
         "start_count": 0,
         "user_names": {},
         "user_username": {},
+        "therapy_progress": {},
     }
 
 
@@ -170,6 +173,33 @@ async def cb_back_to_main(callback: CallbackQuery):
         get_main_menu_text(),
         parse_mode="HTML",
         reply_markup=get_main_menu(),
+    )
+
+
+# ==================== ПОИСК ПО ТЕРАПИИ ====================
+# Ожидающие ввода поискового запроса user_id — тот же приём, что OH_SEARCH_PENDING в
+# vmeda-biology-bot (plain set, а не многошаговый dict вроде ADMIN_PENDING, потому что здесь
+# ровно один шаг: получить текст запроса). Сам text-хендлер намеренно живёт здесь, в
+# telegram_bot.py, а не в handlers/therapy.py — если в боте когда-нибудь появится безусловный
+# catch-all для текста (по аналогии с handle_keyword_search в vmeda-biology-bot), хендлеры,
+# зарегистрированные позже через dp.include_router(), окажутся ПОСЛЕ него в цепочке диспетчера и
+# просто не получат управление. Регистрируя поиск здесь и раньше катча-всего (которого пока нет,
+# но который не должен незаметно всё сломать, если появится), эта проблема исключена заранее —
+# см. handlers/operative_surgery.py в vmeda-biology-bot, тот же аргумент.
+TH_SEARCH_PENDING: set = set()
+
+
+@dp.message(F.text)
+async def handle_therapy_search_query(message: Message):
+    if message.from_user.id not in TH_SEARCH_PENDING:
+        raise SkipHandler
+    TH_SEARCH_PENDING.discard(message.from_user.id)
+    query = message.text.strip()
+    results = therapy_handlers.search_therapy(query)
+    await message.answer(
+        therapy_handlers.get_search_results_text(query, results),
+        parse_mode="HTML",
+        reply_markup=therapy_handlers.get_search_results_keyboard(results),
     )
 
 

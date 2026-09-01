@@ -25,7 +25,8 @@
       "boundary_control": {
         "status": "draft_needs_review",
         "plan_note": "Черновик рубежного контроля есть, ответы нужно проверить.",
-        "questions": []
+        "mcq": [],
+        "self_check": []
       },
       "pharma_overview": {
         "status": "planned",
@@ -35,7 +36,7 @@
       "exam_questions": {
         "status": "not_started",
         "plan_note": "Экзаменационные вопросы по разделу ещё не собраны.",
-        "questions": []
+        "items": []
       },
       "manipulations": {
         "status": "planned",
@@ -57,7 +58,8 @@
           "tests": {
             "status": "source_available",
             "plan_note": "Тестовые вопросы есть.",
-            "questions": []
+            "mcq": [],
+            "self_check": []
           }
         },
         {
@@ -73,7 +75,8 @@
           "tests": {
             "status": "multiple_variants_unverified",
             "plan_note": "Есть несколько вариантов тестов, нужно свести и проверить.",
-            "questions": []
+            "mcq": [],
+            "self_check": []
           }
         },
         {
@@ -89,7 +92,8 @@
           "tests": {
             "status": "unclear_needs_answers",
             "plan_note": "Варианты тестов есть, но правильные ответы пока не подтверждены.",
-            "questions": []
+            "mcq": [],
+            "self_check": []
           }
         }
       ]
@@ -112,7 +116,8 @@
       "boundary_control": {
         "status": "draft_needs_review",
         "plan_note": "Черновик рубежного контроля есть, ответы нужно проверить.",
-        "questions": []
+        "mcq": [],
+        "self_check": []
       },
       "pharma_overview": {
         "status": "planned",
@@ -122,7 +127,7 @@
       "exam_questions": {
         "status": "not_started",
         "plan_note": "Экзаменационные вопросы по разделу ещё не собраны.",
-        "questions": []
+        "items": []
       },
       "manipulations": {
         "status": "planned",
@@ -144,7 +149,8 @@
           "tests": {
             "status": "source_available",
             "plan_note": "Тестовые вопросы есть.",
-            "questions": []
+            "mcq": [],
+            "self_check": []
           }
         },
         {
@@ -160,7 +166,8 @@
           "tests": {
             "status": "multiple_variants_unverified",
             "plan_note": "Есть несколько вариантов тестов, нужно свести и проверить.",
-            "questions": []
+            "mcq": [],
+            "self_check": []
           }
         },
         {
@@ -176,7 +183,8 @@
           "tests": {
             "status": "unclear_needs_answers",
             "plan_note": "Варианты тестов есть, но правильные ответы пока не подтверждены.",
-            "questions": []
+            "mcq": [],
+            "self_check": []
           }
         }
       ]
@@ -199,7 +207,8 @@
       "boundary_control": {
         "status": "not_started",
         "plan_note": "Рубежного контроля по разделу пока не было.",
-        "questions": []
+        "mcq": [],
+        "self_check": []
       },
       "pharma_overview": {
         "status": "planned",
@@ -209,7 +218,7 @@
       "exam_questions": {
         "status": "not_started",
         "plan_note": "Экзаменационные вопросы по разделу ещё не собраны.",
-        "questions": []
+        "items": []
       },
       "manipulations": {
         "status": "planned",
@@ -231,7 +240,8 @@
           "tests": {
             "status": "in_progress",
             "plan_note": "Тесты ещё собираются («ещё»).",
-            "questions": []
+            "mcq": [],
+            "self_check": []
           }
         },
         {
@@ -247,7 +257,8 @@
           "tests": {
             "status": "not_started",
             "plan_note": "Тестов по теме пока не было.",
-            "questions": []
+            "mcq": [],
+            "self_check": []
           }
         },
         {
@@ -263,7 +274,8 @@
           "tests": {
             "status": "practice_only",
             "plan_note": "Есть тесты практического формата («практик»).",
-            "questions": []
+            "mcq": [],
+            "self_check": []
           }
         },
         {
@@ -279,7 +291,8 @@
           "tests": {
             "status": "pending",
             "plan_note": "Тесты в ожидании («ждём…»).",
-            "questions": []
+            "mcq": [],
+            "self_check": []
           }
         }
       ]
