@@ -20,9 +20,12 @@ from datetime import date, datetime, timedelta, timezone
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
-from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, CallbackQuery, Message
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import (
+    BotCommand, BotCommandScopeChat, BotCommandScopeDefault, CallbackQuery, InlineKeyboardButton, Message,
+)
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.dispatcher.event.bases import SkipHandler
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from repositories import knowledge
 
@@ -79,6 +82,7 @@ def load_stats() -> dict:
             data.setdefault("user_names", {})
             data.setdefault("user_username", {})
             data.setdefault("therapy_progress", {})
+            data.setdefault("broadcast_count", 0)
             return data
         except (json.JSONDecodeError, OSError):
             logger.exception("Не удалось прочитать %s, статистика будет создана заново", STATS_FILE)
@@ -88,6 +92,7 @@ def load_stats() -> dict:
         "user_names": {},
         "user_username": {},
         "therapy_progress": {},
+        "broadcast_count": 0,
     }
 
 
@@ -204,10 +209,7 @@ async def handle_therapy_search_query(message: Message):
 
 
 # ==================== АДМИН-ПАНЕЛЬ (минимальная) ====================
-@dp.message(F.text == "/admin")
-async def cmd_admin(message: Message):
-    if not is_admin(message.from_user.id):
-        return
+def get_admin_menu_text() -> str:
     lines = [
         "🛠 <b>Админ-панель «Терапия»</b>",
         DIVIDER,
@@ -217,7 +219,103 @@ async def cmd_admin(message: Message):
         "Разделов курса: " + str(len(THERAPY["sections"])),
         "Тем: " + str(sum(len(s["topics"]) for s in THERAPY["sections"])),
     ]
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    return "\n".join(lines)
+
+
+def get_admin_menu_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="📋 Что не хватает", callback_data="admin:coverage"))
+    builder.row(InlineKeyboardButton(text="📣 Разослать всем", callback_data="admin:broadcast_prompt"))
+    return builder.as_markup()
+
+
+@dp.message(F.text == "/admin")
+async def cmd_admin(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    await message.answer(get_admin_menu_text(), parse_mode="HTML", reply_markup=get_admin_menu_keyboard())
+
+
+@dp.callback_query(F.data == "admin:coverage")
+async def cb_admin_coverage(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    await callback.answer()
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin:menu"))
+    await safe_edit_text(
+        callback.message,
+        therapy_handlers.get_admin_coverage_text(),
+        parse_mode="HTML",
+        reply_markup=builder.as_markup(),
+    )
+
+
+@dp.callback_query(F.data == "admin:menu")
+async def cb_admin_menu(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    await callback.answer()
+    await safe_edit_text(
+        callback.message, get_admin_menu_text(), parse_mode="HTML", reply_markup=get_admin_menu_keyboard(),
+    )
+
+
+# Рассылка всем пользователям — тот же двухшаговый приём, что ADMIN_PENDING в vmeda-biology-bot
+# (нажал кнопку -> следующее сообщение админа берётся как текст рассылки), но упрощён до plain
+# set[user_id], потому что здесь всего одно действие, а не целый switch по action — тот же выбор,
+# что уже сделан для TH_SEARCH_PENDING выше.
+ADMIN_BROADCAST_PENDING: set = set()
+
+
+@dp.callback_query(F.data == "admin:broadcast_prompt")
+async def cb_admin_broadcast_prompt(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    TH_SEARCH_PENDING.discard(callback.from_user.id)  # взаимоисключающие текстовые ожидания
+    ADMIN_BROADCAST_PENDING.add(callback.from_user.id)
+    await callback.answer()
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="admin:menu"))
+    await safe_edit_text(
+        callback.message,
+        "📣 Пришли текст, который нужно разослать всем пользователям бота.",
+        reply_markup=builder.as_markup(),
+    )
+
+
+async def _broadcast_to_all(text: str) -> tuple:
+    """Рассылает text каждому user_id из stats["total_users"]. Небольшая пауза между отправками —
+    не throttling-защита в полном смысле (для реального масштаба нужна очередь/лимитер), а просто
+    вежливость к Bot API при рассылке уже не единицам, а десяткам/сотням пользователей."""
+    success = 0
+    failed = 0
+    for user_id in list(stats["total_users"]):
+        try:
+            await bot.send_message(user_id, text, parse_mode="HTML")
+            success += 1
+        except TelegramForbiddenError:
+            failed += 1
+        except Exception:
+            logger.exception("Не удалось разослать сообщение %s", user_id)
+            failed += 1
+        await asyncio.sleep(0.05)
+    return success, failed
+
+
+@dp.message(F.text)
+async def handle_admin_broadcast_text(message: Message):
+    admin_id = message.from_user.id
+    if not is_admin(admin_id) or admin_id not in ADMIN_BROADCAST_PENDING:
+        raise SkipHandler
+    ADMIN_BROADCAST_PENDING.discard(admin_id)
+    success, failed = await _broadcast_to_all(message.text)
+    stats["broadcast_count"] = stats.get("broadcast_count", 0) + 1
+    save_stats()
+    await message.answer(f"📣 Разослано: {success} успешно, {failed} не доставлено.", parse_mode="HTML")
 
 
 # ==================== ПОДКЛЮЧЕНИЕ РОУТЕРОВ ПРЕДМЕТОВ ====================

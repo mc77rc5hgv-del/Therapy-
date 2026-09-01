@@ -137,6 +137,16 @@ answer key → render as a plain self-check list, never a scored quiz). So:
   list) — `render_topic_content()`/`render_section_content()` check `mcq` first, then `self_check`,
   then fall back to the honest status screen when both are empty.
 
+**Startup validation** (`repositories/knowledge.validate_therapy()`, run once right after
+`therapy.json` loads — a bad file fails the import with a `ValueError`, so a broken deploy dies at
+startup with a clear message instead of crashing a handler mid-conversation). Checks only the
+*shape* of the data — required keys present, `mcq[].correct_index` within `options[]` bounds,
+`comparison_table.table.rows[].values` length matching `headers[]`, no duplicate section/topic
+ids — never medical correctness, that's still on whoever writes the content. Extend this whenever
+a new required field is added to the schema above; `tests/test_content_validation.py` builds a
+minimal valid skeleton via `copy.deepcopy` and breaks one field at a time, so it doesn't depend on
+how many real sections/topics happen to exist today.
+
 **Sections 4-6 are deliberately absent from `therapy.json`** — the source plan's own author wrote
 "пока не знаю общий план дисциплины" (don't know the overall course plan yet) for those, so
 inventing section names/topics for them would be fabricating content the plan's own author
@@ -178,6 +188,13 @@ completed** `kind="topic_tests"` session (reached the last question, not stopped
 per-topic progress (there's no single topic to attribute a section-wide quiz score to); if
 per-section quiz history is ever wanted, add a parallel `stats["therapy_section_progress"]` rather
 than overloading the topic-keyed one.
+
+`THERAPY_QUIZ_SESSIONS` is never cleared for a user who just abandons the chat mid-quiz (closes it
+without tapping "🛑 Закончить") — nothing else would ever remove that entry, which on a long-running
+process is a slow memory leak. Rather than a background `asyncio` task, `start_therapy_quiz()` runs
+a lazy sweep (`_sweep_stale_quiz_sessions()`, `QUIZ_SESSION_TTL_SECONDS = 3h`) every time ANY user
+starts a new quiz — the only place the dict's size grows, so it's also the cheapest place to shrink
+it. Each session carries `started_at` (`time.time()` at creation) for exactly this purpose.
 
 ### Search (`search_therapy()`)
 
@@ -222,12 +239,31 @@ because the sister project has them.
 
 ### Admin
 
-`ADMIN_IDS` (env var, comma-separated numeric Telegram IDs) gates `/admin`, which currently only
-shows a one-screen stats summary (`cmd_admin` in `telegram_bot.py`) — no grant/revoke access,
-broadcasts, or content moderation yet, unlike `vmeda-biology-bot`'s much larger admin panel. Build
-these out only once there's an actual access-control or monetization model for this bot — right
-now everything in `handlers/therapy.py` is free/ungated for every user, since the course has no
-paid tiers defined.
+`ADMIN_IDS` (env var, comma-separated numeric Telegram IDs) gates `/admin` (`is_admin()` checked in
+every admin handler/callback below — never assume a callback is unreachable by a non-admin just
+because the button isn't shown to them). Three things live behind it today, all much smaller than
+`vmeda-biology-bot`'s admin panel (no grant/revoke access, subscriptions, or content moderation
+queue yet — this bot has no access-control/monetization model to admin in the first place):
+
+- **Stats summary** (`get_admin_menu_text()`) — user/start counts, section/topic counts.
+- **Content coverage** (`"📋 Что не хватает"` → `admin:coverage` → `handlers/therapy.py`'s
+  `get_admin_coverage_text()`) — see the "Startup validation"/content-model notes above: this is
+  the checklist the user (as the one actually authoring content into `therapy.json` over time)
+  reads to know what's still a stub. Distinct from `search_therapy()` — that finds text, this
+  counts "filled vs empty" per leaf of the content tree. `_section_content_filled()`/
+  `_topic_content_filled()` are the single "is this leaf done" predicate — keep every future
+  content field's "done" check going through one of these two, not reinvented inline, or the
+  coverage count and the actual render logic (`render_topic_content()`/`render_section_content()`)
+  can silently disagree about what counts as filled.
+- **Broadcast** (`"📣 Разослать всем"` → `admin:broadcast_prompt` → `ADMIN_BROADCAST_PENDING`, a
+  plain `set[user_id]` exactly like `TH_SEARCH_PENDING` above, one action so no `ADMIN_PENDING`-style
+  dict needed) — next plain-text message from that admin goes to every `stats["total_users"]` via
+  `_broadcast_to_all()`. `ADMIN_BROADCAST_PENDING` and `TH_SEARCH_PENDING` are mutually exclusive by
+  construction — pressing either prompt button clears the other pending-set entry for that user
+  first — so one stray text message from an admin who tapped both prompts in a row can't be
+  ambiguously routed to the wrong handler. `_broadcast_to_all()` isn't a real throttling layer (no
+  queue, no backoff beyond a flat 50ms sleep between sends) — fine at this bot's current scale, but
+  revisit before a broadcast could ever target thousands of users.
 
 ## Known pitfalls (carried over from vmeda-biology-bot, still apply here)
 

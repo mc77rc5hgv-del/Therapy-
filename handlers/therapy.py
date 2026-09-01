@@ -47,6 +47,12 @@ self_check/table), поиск автоматически начинает нах
 vmeda-biology-bot). Пока не используется ни для гейтинга, ни для SRS — просто чтобы у бота уже
 была основа для «мой прогресс», когда в разделах появится реальный контент, есть что показывать.
 
+**Покрытие контента** (`get_admin_coverage_text()`, за кнопкой «📋 Что не хватает» в /admin) —
+чек-лист по структуре плана, какие блоки/темы всё ещё рендерят заглушку, а какие уже реально
+заполнены. Отдельная вещь от `search_therapy()` (тот ищет по тексту, этот считает "заполнено/не
+заполнено" по каждому листу дерева контента) — нужен, чтобы пользователь как автор контента видел
+прогресс наполнения бота, а не только прогресс студентов.
+
 Импортирует telegram_bot как tb — тот же паттерн, что и handlers/physiology.py в vmeda-biology-bot
 (поздно подключаемый модуль, использующий DIVIDER/safe_edit_text/stats, уже определённые там)."""
 import html
@@ -183,6 +189,66 @@ def get_therapy_progress_text(user_id: int) -> str:
         lines.append("")
         lines.append("Тесты с проверкой ответа появятся, как только по темам будут добавлены проверенные вопросы.")
     return "\n".join(lines)
+
+
+# ==================== админ: покрытие контента ====================
+# Пока therapy.json — по большей части заглушки (см. модульный docstring), самому пользователю
+# предстоит вручную наполнять material/mcq/self_check/table по мере поступления слайдов/.ppt.
+# Этот экран — чек-лист "что ещё не заполнено" по структуре ИМЕННО плана (а не общий текстовый
+# поиск, который уже есть в search_therapy()) — не гейтит и не блокирует ничего, просто отвечает
+# на вопрос "куда наполнять дальше", без похода в raw JSON руками.
+
+def _section_content_filled(section: dict, ctype: str) -> bool:
+    block = section[ctype]
+    if ctype == "comparison_table":
+        return not _table_is_empty(block.get("table"))
+    if ctype in ("boundary_control",):
+        return bool(block.get("mcq") or block.get("self_check"))
+    if ctype == "exam_questions":
+        return bool(block.get("items"))
+    return bool(block.get("material"))
+
+
+def _topic_content_filled(topic: dict, ctype: str) -> bool:
+    block = topic[ctype]
+    if ctype == "tests":
+        return bool(block.get("mcq") or block.get("self_check"))
+    return bool(block.get("material"))
+
+
+def get_admin_coverage_text() -> str:
+    lines = ["📋 <b>Что ещё нужно наполнить</b>", tb.DIVIDER]
+    total_leaves = 0
+    filled_leaves = 0
+    for section in tb.THERAPY["sections"]:
+        section_missing = [
+            label for ctype, label in SECTION_CONTENT_TYPES if not _section_content_filled(section, ctype)
+        ]
+        total_leaves += len(SECTION_CONTENT_TYPES)
+        filled_leaves += len(SECTION_CONTENT_TYPES) - len(section_missing)
+
+        topic_missing = []
+        for topic in section["topics"]:
+            for ctype, label in TOPIC_CONTENT_TYPES:
+                total_leaves += 1
+                if _topic_content_filled(topic, ctype):
+                    filled_leaves += 1
+                else:
+                    topic_missing.append(f"{topic['id']} {label}")
+
+        lines.append(f"<b>{esc(section['title'])}</b>")
+        if not section_missing and not topic_missing:
+            lines.append("  ✅ всё заполнено")
+        else:
+            if section_missing:
+                lines.append("  Раздел: " + ", ".join(section_missing))
+            if topic_missing:
+                lines.append("  Темы: " + ", ".join(topic_missing))
+        lines.append("")
+
+    pct = round(100 * filled_leaves / total_leaves) if total_leaves else 0
+    lines.append(f"Итого заполнено: {filled_leaves}/{total_leaves} ({pct}%)")
+    return "\n".join(lines).strip()
 
 
 # ==================== поиск ====================
@@ -456,6 +522,21 @@ def render_section_content(section_id: str, ctype: str):
 
 
 # ==================== quiz engine (topic tests / boundary control) ====================
+# THERAPY_QUIZ_SESSIONS живёт, пока не завершится/не прервётся сессия — но если студент просто
+# закрыл чат посреди теста, ни то, ни другое никогда не случится, и запись осталась бы в словаре
+# навсегда (тихая утечка памяти на долго работающем процессе). Явного фонового таска для очистки
+# заводить не стали — вместо этого ленивый sweep при каждом НОВОМ старте теста (единственная
+# точка входа, где размер словаря вообще растёт), тот же компромисс "просто и достаточно", что и
+# остальная часть этого MVP.
+QUIZ_SESSION_TTL_SECONDS = 3 * 3600
+
+
+def _sweep_stale_quiz_sessions() -> None:
+    now = time.time()
+    stale = [uid for uid, s in THERAPY_QUIZ_SESSIONS.items() if now - s["started_at"] > QUIZ_SESSION_TTL_SECONDS]
+    for uid in stale:
+        THERAPY_QUIZ_SESSIONS.pop(uid, None)
+
 
 def _quiz_questions_for(section_id: str, topic_id, kind: str) -> list:
     if kind == "topic_tests":
@@ -468,11 +549,12 @@ def _quiz_questions_for(section_id: str, topic_id, kind: str) -> list:
 
 
 def start_therapy_quiz(user_id: int, section_id: str, topic_id, kind: str, back_callback: str) -> dict:
+    _sweep_stale_quiz_sessions()
     questions = _quiz_questions_for(section_id, topic_id, kind)
     session = {
         "sid": section_id, "tid": topic_id, "kind": kind,
         "questions": questions, "idx": 0, "correct": 0, "total": len(questions),
-        "back_callback": back_callback,
+        "back_callback": back_callback, "started_at": time.time(),
     }
     THERAPY_QUIZ_SESSIONS[user_id] = session
     return session
@@ -582,6 +664,7 @@ async def cb_therapy_progress(callback: CallbackQuery):
 
 @router.callback_query(F.data == "th:search_prompt")
 async def cb_therapy_search_prompt(callback: CallbackQuery):
+    tb.ADMIN_BROADCAST_PENDING.discard(callback.from_user.id)  # взаимоисключающие текстовые ожидания
     tb.TH_SEARCH_PENDING.add(callback.from_user.id)
     await callback.answer()
     await tb.safe_edit_text(

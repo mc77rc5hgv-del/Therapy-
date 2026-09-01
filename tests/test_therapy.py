@@ -189,6 +189,9 @@ async def run():
     await check_search()
     await check_progress_and_quiz()
     await check_self_check_and_comparison_table()
+    await check_admin_coverage()
+    await check_admin_broadcast()
+    await check_quiz_session_ttl_sweep()
 
     print("\nВСЕ ПРОВЕРКИ ПРОЙДЕНЫ")
 
@@ -339,6 +342,106 @@ async def check_self_check_and_comparison_table():
     finally:
         section["comparison_table"]["table"] = original_table
     print("OK self_check и структурированная сравнительная таблица рендерятся корректно")
+
+
+async def check_admin_coverage():
+    total_leaves = sum(
+        len(th.SECTION_CONTENT_TYPES) + len(s["topics"]) * len(th.TOPIC_CONTENT_TYPES)
+        for s in tb.THERAPY["sections"]
+    )
+    text = th.get_admin_coverage_text()
+    check_html(text)
+    assert "Что ещё нужно наполнить" in text
+    assert f"Итого заполнено: 0/{total_leaves} (0%)" in text, text
+    assert "1.1 📖 Теория" in text and "1.1 📝 Тесты" in text
+
+    # гейт по админу на callback-обёртке
+    cb = FakeCB("admin:coverage", uid=999999)
+    await tb.cb_admin_coverage(cb)
+    assert not cb.message.sent_texts, "не-админ не должен получать содержимое coverage-экрана"
+
+    cb = FakeCB("admin:coverage", uid=ADMIN_ID)
+    await tb.cb_admin_coverage(cb)
+    text, markup = cb.message.sent_texts[-1]
+    assert "Что ещё нужно наполнить" in text
+    assert kb_data(markup) == ["admin:menu"]
+    print("OK admin coverage: честный подсчёт заполненности, гейт по ADMIN_IDS")
+
+
+async def check_admin_broadcast():
+    # доступ только у админа
+    cb = FakeCB("admin:broadcast_prompt", uid=999999)
+    await tb.cb_admin_broadcast_prompt(cb)
+    assert 999999 not in tb.ADMIN_BROADCAST_PENDING
+
+    cb = FakeCB("admin:broadcast_prompt", uid=ADMIN_ID)
+    await tb.cb_admin_broadcast_prompt(cb)
+    assert ADMIN_ID in tb.ADMIN_BROADCAST_PENDING
+
+    tb.stats["total_users"].update({111, 222, 333})
+    sent_to = []
+
+    async def fake_send_message(user_id, text, **kwargs):
+        if user_id == 222:
+            raise RuntimeError("boom")
+        sent_to.append((user_id, text))
+
+    original_send = tb.bot.send_message
+    tb.bot.send_message = fake_send_message
+    try:
+        msg = FakeMsg()
+        text_msg = type("M", (), {
+            "from_user": FakeUser(ADMIN_ID), "text": "Добавлена теория по ХОБЛ!", "answer": msg.answer,
+        })()
+        await tb.handle_admin_broadcast_text(text_msg)
+    finally:
+        tb.bot.send_message = original_send
+
+    assert ADMIN_ID not in tb.ADMIN_BROADCAST_PENDING, "флаг ожидания должен сняться после рассылки"
+    assert any(uid == 111 for uid, _ in sent_to)
+    assert any(uid == 333 for uid, _ in sent_to)
+    assert not any(uid == 222 for uid, _ in sent_to), "отправка 222 должна была упасть с исключением"
+    text, _ = msg.sent_texts[-1]
+    assert "успешно" in text and "не доставлено" in text
+    print("OK рассылка: гейт по admin, реально рассылает, отдельно считает успехи/ошибки")
+
+    # не-админ или админ вне очереди -> SkipHandler, сообщение не съедается
+    for uid in (999999, ADMIN_ID):
+        msg = FakeMsg()
+        text_msg = type("M", (), {"from_user": FakeUser(uid), "text": "просто текст", "answer": msg.answer})()
+        try:
+            await tb.handle_admin_broadcast_text(text_msg)
+            raised = False
+        except Exception as e:
+            raised = type(e).__name__ == "SkipHandler"
+        assert raised, uid
+        assert not msg.sent_texts
+    print("OK рассылка: SkipHandler для не-админа и для админа вне очереди")
+
+
+async def check_quiz_session_ttl_sweep():
+    import time as _time
+
+    stale_uid = 424242
+    th.THERAPY_QUIZ_SESSIONS[stale_uid] = {
+        "sid": "respiratory", "tid": "1.1", "kind": "topic_tests",
+        "questions": [], "idx": 0, "correct": 0, "total": 0,
+        "back_callback": "th:menu", "started_at": _time.time() - th.QUIZ_SESSION_TTL_SECONDS - 1,
+    }
+
+    topic = th.get_topic("respiratory", "1.1")
+    original_mcq = topic["tests"]["mcq"]
+    topic["tests"]["mcq"] = [{"question": "?", "options": ["a", "b"], "correct_index": 0, "explanation": ""}]
+    try:
+        other_uid = 424243
+        cb = FakeCB("th:quiz_start:respiratory:1.1:topic_tests", uid=other_uid)
+        await th.cb_therapy_quiz_start(cb)
+        assert stale_uid not in th.THERAPY_QUIZ_SESSIONS, "просроченная сессия должна быть выметена"
+        assert other_uid in th.THERAPY_QUIZ_SESSIONS
+        th.THERAPY_QUIZ_SESSIONS.pop(other_uid, None)
+    finally:
+        topic["tests"]["mcq"] = original_mcq
+    print("OK quiz-сессии: просроченные сессии выметаются при старте нового теста")
 
 
 if __name__ == "__main__":
