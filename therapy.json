@@ -1,0 +1,288 @@
+{
+  "meta": {
+    "title": "Терапия",
+    "institution": "ВМедА",
+    "scope_note": "Черновой план дисциплины по присланному пользователем плану (xlsx, получен 01.09.2026). Наполнены только разделы 1-3 — план по остальным разделам курса пока не определён автором курса.",
+    "provenance_note": "Ни один медицинский факт (диагностические критерии, дозировки, схемы лечения и т.п.) в этом файле не выдуман — присутствуют только структура курса и статус-пометки, дословно перенесённые из плана. Реальные теория/тесты/сравнительные таблицы/вопросы заполняются отдельно, по мере поступления исходных материалов (слайды, .ppt, методички кафедры).",
+    "open_sections_note": "В плане отмечены ещё разделы 4, 5, 6 — автор плана указал «пока не знаю общий план дисциплины», поэтому они здесь не заведены, чтобы не придумывать содержание за него."
+  },
+  "sections": [
+    {
+      "id": "respiratory",
+      "order": 1,
+      "title": "Система органов дыхания",
+      "short_title": "Дыхательная система",
+      "anatomy_overview": {
+        "status": "planned",
+        "plan_note": "Обзор анатомии (кратко): глоссарий, тест MCQ с пояснением правильного ответа, схемы/картинки.",
+        "material": []
+      },
+      "comparison_table": {
+        "status": "planned",
+        "plan_note": "Сравнительная таблица по темам раздела — по плану «сделать».",
+        "table": null
+      },
+      "boundary_control": {
+        "status": "draft_needs_review",
+        "plan_note": "Черновик рубежного контроля есть, ответы нужно проверить.",
+        "questions": []
+      },
+      "pharma_overview": {
+        "status": "planned",
+        "plan_note": "Обзор фармы (кратко): группы ЛС, механизмы действия, примеры препаратов.",
+        "material": []
+      },
+      "exam_questions": {
+        "status": "not_started",
+        "plan_note": "Экзаменационные вопросы по разделу ещё не собраны.",
+        "questions": []
+      },
+      "manipulations": {
+        "status": "planned",
+        "plan_note": "Манипуляции по разделу планируется подобрать из смежных дисциплин.",
+        "material": []
+      },
+      "open_note": "В плане отмечено «м.б.ещё..?» — возможны дополнительные темы раздела.",
+      "topics": [
+        {
+          "id": "1.1",
+          "order": 1,
+          "title": "ХОБЛ",
+          "full_title": "Хроническая обструктивная болезнь лёгких",
+          "theory": {
+            "status": "source_available",
+            "plan_note": "Материал есть (слайды кафедры), требуется перенос в бот.",
+            "material": []
+          },
+          "tests": {
+            "status": "source_available",
+            "plan_note": "Тестовые вопросы есть.",
+            "questions": []
+          }
+        },
+        {
+          "id": "1.2",
+          "order": 2,
+          "title": "Бронхиальная астма",
+          "full_title": "Бронхиальная астма",
+          "theory": {
+            "status": "source_available",
+            "plan_note": "Материал есть в формате .ppt.",
+            "material": []
+          },
+          "tests": {
+            "status": "multiple_variants_unverified",
+            "plan_note": "Есть несколько вариантов тестов, нужно свести и проверить.",
+            "questions": []
+          }
+        },
+        {
+          "id": "1.3",
+          "order": 3,
+          "title": "Пневмония",
+          "full_title": "Пневмония",
+          "theory": {
+            "status": "source_available",
+            "plan_note": "Материал есть.",
+            "material": []
+          },
+          "tests": {
+            "status": "unclear_needs_answers",
+            "plan_note": "Варианты тестов есть, но правильные ответы пока не подтверждены.",
+            "questions": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "cardiovascular",
+      "order": 2,
+      "title": "Сердечно-сосудистая система",
+      "short_title": "ССС",
+      "anatomy_overview": {
+        "status": "planned",
+        "plan_note": "Обзор анатомии (кратко): глоссарий, тест MCQ с пояснением правильного ответа, схемы/картинки.",
+        "material": []
+      },
+      "comparison_table": {
+        "status": "planned",
+        "plan_note": "Сравнительная таблица по темам раздела — по плану «сделать».",
+        "table": null
+      },
+      "boundary_control": {
+        "status": "draft_needs_review",
+        "plan_note": "Черновик рубежного контроля есть, ответы нужно проверить.",
+        "questions": []
+      },
+      "pharma_overview": {
+        "status": "planned",
+        "plan_note": "Обзор фармы (кратко): группы ЛС, механизмы действия, примеры препаратов.",
+        "material": []
+      },
+      "exam_questions": {
+        "status": "not_started",
+        "plan_note": "Экзаменационные вопросы по разделу ещё не собраны.",
+        "questions": []
+      },
+      "manipulations": {
+        "status": "planned",
+        "plan_note": "Манипуляции по разделу планируется подобрать из смежных дисциплин.",
+        "material": []
+      },
+      "open_note": "В плане отмечено «м.б.ещё..?» — возможны дополнительные темы раздела.",
+      "topics": [
+        {
+          "id": "2.1",
+          "order": 1,
+          "title": "ИБС",
+          "full_title": "Ишемическая болезнь сердца",
+          "theory": {
+            "status": "source_available",
+            "plan_note": "Материал есть (слайды кафедры), требуется перенос в бот.",
+            "material": []
+          },
+          "tests": {
+            "status": "source_available",
+            "plan_note": "Тестовые вопросы есть.",
+            "questions": []
+          }
+        },
+        {
+          "id": "2.2",
+          "order": 2,
+          "title": "Артериальная гипертензия",
+          "full_title": "Артериальная гипертензия",
+          "theory": {
+            "status": "source_available",
+            "plan_note": "Материал есть в формате .ppt.",
+            "material": []
+          },
+          "tests": {
+            "status": "multiple_variants_unverified",
+            "plan_note": "Есть несколько вариантов тестов, нужно свести и проверить.",
+            "questions": []
+          }
+        },
+        {
+          "id": "2.3",
+          "order": 3,
+          "title": "ОРЛ",
+          "full_title": "Острая ревматическая лихорадка",
+          "theory": {
+            "status": "source_available",
+            "plan_note": "Материал есть.",
+            "material": []
+          },
+          "tests": {
+            "status": "unclear_needs_answers",
+            "plan_note": "Варианты тестов есть, но правильные ответы пока не подтверждены.",
+            "questions": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "digestive",
+      "order": 3,
+      "title": "Пищеварительная система",
+      "short_title": "ЖКТ",
+      "anatomy_overview": {
+        "status": "planned",
+        "plan_note": "Обзор анатомии (кратко): глоссарий, тест MCQ с пояснением правильного ответа, схемы/картинки.",
+        "material": []
+      },
+      "comparison_table": {
+        "status": "planned",
+        "plan_note": "Сравнительная таблица по темам раздела — по плану «сделать».",
+        "table": null
+      },
+      "boundary_control": {
+        "status": "not_started",
+        "plan_note": "Рубежного контроля по разделу пока не было.",
+        "questions": []
+      },
+      "pharma_overview": {
+        "status": "planned",
+        "plan_note": "Обзор фармы (кратко): группы ЛС, механизмы действия, примеры препаратов.",
+        "material": []
+      },
+      "exam_questions": {
+        "status": "not_started",
+        "plan_note": "Экзаменационные вопросы по разделу ещё не собраны.",
+        "questions": []
+      },
+      "manipulations": {
+        "status": "planned",
+        "plan_note": "Манипуляции по разделу планируется подобрать из смежных дисциплин.",
+        "material": []
+      },
+      "open_note": "В плане отмечено «м.б.ещё..?» — возможны дополнительные темы раздела.",
+      "topics": [
+        {
+          "id": "3.1",
+          "order": 1,
+          "title": "Гастрит",
+          "full_title": "Гастрит",
+          "theory": {
+            "status": "source_available",
+            "plan_note": "Материал есть (слайды кафедры), требуется перенос в бот.",
+            "material": []
+          },
+          "tests": {
+            "status": "in_progress",
+            "plan_note": "Тесты ещё собираются («ещё»).",
+            "questions": []
+          }
+        },
+        {
+          "id": "3.2",
+          "order": 2,
+          "title": "Язвенная болезнь",
+          "full_title": "Язвенная болезнь",
+          "theory": {
+            "status": "source_available",
+            "plan_note": "Материал есть в формате .ppt.",
+            "material": []
+          },
+          "tests": {
+            "status": "not_started",
+            "plan_note": "Тестов по теме пока не было.",
+            "questions": []
+          }
+        },
+        {
+          "id": "3.3",
+          "order": 3,
+          "title": "ВЗК",
+          "full_title": "Воспалительные заболевания кишечника",
+          "theory": {
+            "status": "source_available",
+            "plan_note": "Материал есть.",
+            "material": []
+          },
+          "tests": {
+            "status": "practice_only",
+            "plan_note": "Есть тесты практического формата («практик»).",
+            "questions": []
+          }
+        },
+        {
+          "id": "3.4",
+          "order": 4,
+          "title": "Панкреатит",
+          "full_title": "Панкреатит",
+          "theory": {
+            "status": "pending",
+            "plan_note": "Материал по теории пока не прислан.",
+            "material": []
+          },
+          "tests": {
+            "status": "pending",
+            "plan_note": "Тесты в ожидании («ждём…»).",
+            "questions": []
+          }
+        }
+      ]
+    }
+  ]
+}
