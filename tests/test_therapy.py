@@ -80,7 +80,7 @@ def kb_data(markup):
 async def run():
     # /start -> главное меню = список разделов
     msg = FakeMsg()
-    start_msg = type("M", (), {"from_user": FakeUser(ADMIN_ID), "answer": msg.answer})()
+    start_msg = type("M", (), {"from_user": FakeUser(ADMIN_ID), "text": "/start", "answer": msg.answer})()
     await tb.cmd_start(start_msg)
     text, markup = msg.sent_texts[-1]
     check_html(text)
@@ -212,6 +212,8 @@ async def run():
     await check_status_icons()
     await check_bot_commands()
     check_back_keyboard_no_duplicate_menu_button()
+    await check_quiz_answer_race_condition()
+    await check_deep_links()
 
     print("\nВСЕ ПРОВЕРКИ ПРОЙДЕНЫ")
 
@@ -635,6 +637,105 @@ def check_back_keyboard_no_duplicate_menu_button():
     markup = th.get_back_keyboard("th:menu")
     assert kb_data(markup) == ["th:menu"], "на самом главном меню не должно быть второй кнопки в меню"
     print('OK get_back_keyboard("th:menu") не дублирует кнопку меню')
+
+
+async def check_quiz_answer_race_condition():
+    """cb_therapy_quiz_answer мутирует всю session ДО первого await — воспроизводим быстрый
+    двойной тап реальной конкурентностью (asyncio.gather + принудительная точка переключения
+    контекста внутри answer()), а не последовательными вызовами, иначе тест не проверял бы то,
+    что действительно было исправлено."""
+    uid = 777006
+    tb.stats["therapy_progress"].pop(str(uid), None)
+    topic = th.get_topic("respiratory", "1.1")
+    original_mcq = topic["tests"]["mcq"]
+    topic["tests"]["mcq"] = [
+        {"question": "Q1", "options": ["A", "B"], "correct_index": 0, "explanation": ""},
+        {"question": "Q2", "options": ["A", "B"], "correct_index": 0, "explanation": ""},
+    ]
+    try:
+        th.start_therapy_quiz(uid, "respiratory", "1.1", "topic_tests", "th:topic:respiratory:1.1")
+
+        class SlowFakeCB(FakeCB):
+            async def answer(self, text=None, show_alert=False):
+                await asyncio.sleep(0)  # настоящая точка переключения контекста, как реальный API-вызов
+                self._answers.append((text, show_alert))
+
+        cb1 = SlowFakeCB("th:quiz_answer:0", uid=uid)
+        cb2 = SlowFakeCB("th:quiz_answer:0", uid=uid)
+        await asyncio.gather(th.cb_therapy_quiz_answer(cb1), th.cb_therapy_quiz_answer(cb2))
+
+        assert uid not in th.THERAPY_QUIZ_SESSIONS, "сессия из 2 вопросов должна закрыться после 2 ответов"
+        progress = tb.stats["therapy_progress"][str(uid)]["respiratory:1.1"]
+        assert progress["quiz_attempts"] == 1, "запись прогресса не должна задваиваться"
+        assert progress["quiz_best_correct"] == 2 and progress["quiz_best_total"] == 2, progress
+    finally:
+        topic["tests"]["mcq"] = original_mcq
+        tb.stats["therapy_progress"].pop(str(uid), None)
+    print("OK quiz_answer: гонка при двойном тапе не даёт IndexError/задвоенный счёт")
+
+
+async def check_deep_links():
+    assert th.resolve_deep_link("") is None
+    assert th.resolve_deep_link("garbage") is None
+    assert th.resolve_deep_link("topic__respiratory__no_such_topic") is None
+    assert th.resolve_deep_link("section__no_such_section") is None
+    assert th.resolve_deep_link("topic__respiratory") is None  # неполный payload
+
+    payload = th.build_topic_deep_link_payload("respiratory", "1.1")
+    assert payload == "topic__respiratory__1.1"
+    assert th.resolve_deep_link(payload) == ("topic", "respiratory", "1.1")
+
+    section_payload = th.build_section_deep_link_payload("cardiovascular")
+    assert section_payload == "section__cardiovascular"
+    assert th.resolve_deep_link(section_payload) == ("section", "cardiovascular", None)
+
+    # /start topic__respiratory__1.1 -> сразу экран темы, а не главное меню, и open засчитан в прогресс
+    uid = 777007
+    tb.stats["therapy_progress"].pop(str(uid), None)
+    msg = FakeMsg()
+    start_msg = type("M", (), {"from_user": FakeUser(uid), "text": f"/start {payload}", "answer": msg.answer})()
+    await tb.cmd_start(start_msg)
+    text, markup = msg.sent_texts[-1]
+    check_html(text)
+    assert "Хроническая обструктивная болезнь лёгких" in text
+    assert any(d.startswith("th:content:respiratory:1.1:") for d in kb_data(markup))
+    assert tb.stats["therapy_progress"][str(uid)]["respiratory:1.1"]["opened_at"]
+
+    # /start section__cardiovascular -> сразу экран раздела
+    uid2 = 777008
+    msg2 = FakeMsg()
+    start_msg2 = type(
+        "M", (), {"from_user": FakeUser(uid2), "text": f"/start {section_payload}", "answer": msg2.answer},
+    )()
+    await tb.cmd_start(start_msg2)
+    text2, markup2 = msg2.sent_texts[-1]
+    assert "Сердечно-сосудистая" in text2
+    assert any(d.startswith("th:topic:cardiovascular:") for d in kb_data(markup2))
+
+    # /start с неизвестным/битым payload -> тихий откат на обычное главное меню, без падения
+    uid3 = 777009
+    msg3 = FakeMsg()
+    start_msg3 = type(
+        "M", (), {"from_user": FakeUser(uid3), "text": "/start bogus_payload_xyz", "answer": msg3.answer},
+    )()
+    await tb.cmd_start(start_msg3)
+    text3, markup3 = msg3.sent_texts[-1]
+    assert any(d.startswith("th:section:") for d in kb_data(markup3))
+
+    # build_deep_link_url: без BOT_USERNAME (как до первого запуска main()) отдаёт заглушку, не падает
+    assert tb.BOT_USERNAME == ""
+    placeholder = tb.build_deep_link_url(payload)
+    assert payload in placeholder and "t.me" not in placeholder
+
+    tb.BOT_USERNAME = "TherapyBot"
+    try:
+        url = tb.build_deep_link_url(payload)
+        assert url == f"https://t.me/TherapyBot?start={payload}"
+    finally:
+        tb.BOT_USERNAME = ""
+
+    tb.stats["therapy_progress"].pop(str(uid), None)
+    print("OK deep links: валидные/битые payload'ы, /start сразу открывает тему/раздел, build_deep_link_url")
 
 
 if __name__ == "__main__":

@@ -66,6 +66,7 @@ vmeda-biology-bot). Пока не используется ни для гейт�
 
 Импортирует telegram_bot как tb — тот же паттерн, что и handlers/physiology.py в vmeda-biology-bot
 (поздно подключаемый модуль, использующий DIVIDER/safe_edit_text/stats, уже определённые там)."""
+import asyncio
 import html
 import random
 import time
@@ -136,6 +137,39 @@ def get_topic(section_id: str, topic_id: str):
 
 def status_label(status: str) -> str:
     return STATUS_LABELS.get(status, f"ℹ️ {esc(status)}")
+
+
+# ==================== deep links (/start payload) ====================
+# t.me/<bot>?start=<payload> — например, чтобы рассылка о новой теме («📣 Разослать всем» в
+# /admin) могла вести сразу на неё, а не просто в главное меню. "__" как разделитель, а не "_",
+# потому что section_id/topic_id сами по себе не содержат "_" (id разделов — латиница без
+# подчёркиваний, id тем — числа с точкой вроде "1.1"), так что "__" однозначно не спутать с
+# частью самого id.
+
+def build_topic_deep_link_payload(section_id: str, topic_id: str) -> str:
+    return f"topic__{section_id}__{topic_id}"
+
+
+def build_section_deep_link_payload(section_id: str) -> str:
+    return f"section__{section_id}"
+
+
+def resolve_deep_link(payload: str):
+    """(kind, section_id, topic_id) для валидного payload'а ("topic"/"section"), иначе None —
+    /start обязан молча откатиться на обычное главное меню на чужой/устаревшей/битой ссылке,
+    никогда не падать. topic_id всегда None для kind="section"."""
+    if not payload:
+        return None
+    parts = payload.split("__")
+    if len(parts) == 3 and parts[0] == "topic":
+        _, section_id, topic_id = parts
+        if get_topic(section_id, topic_id):
+            return "topic", section_id, topic_id
+    elif len(parts) == 2 and parts[0] == "section":
+        _, section_id = parts
+        if get_section(section_id):
+            return "section", section_id, None
+    return None
 
 
 # ==================== прогресс ====================
@@ -771,30 +805,60 @@ async def cb_therapy_quiz_start(callback: CallbackQuery):
     await tb.safe_edit_text(callback.message, text, parse_mode="HTML", reply_markup=keyboard)
 
 
+# Per-user lock вокруг ВСЕГО тела cb_therapy_quiz_answer (не только мутации session) — тот же
+# приём, что AI_USER_LOCKS в vmeda-biology-bot для точно такого же класса проблем. Просто
+# переставить мутацию session раньше первого await недостаточно: сама мутация становится
+# атомарной, но рендер следующего экрана (render_quiz_question/render_quiz_summary) всё равно
+# читает session СНОВА, уже после await — и второй, действительно параллельный тап того же
+# пользователя за это время успевает продвинуть тот же session ещё дальше (или вовсе закрыть и
+# вынуть его из THERAPY_QUIZ_SESSIONS), так что первый вызов рендерит вопрос по индексу, которого
+# уже нет (IndexError) или который не соответствует тому, что он сам только что решил. Лок вокруг
+# всего тела гарантирует, что второй вызов не начнёт СВОЁ чтение session, пока первый не отправил
+# готовый ответ целиком — тогда он либо корректно отвечает на следующий вопрос по порядку, либо
+# (если первый уже завершил тест) видит, что session нет, и просто квитирует тап без вопроса.
+_QUIZ_ANSWER_LOCKS: dict = {}
+
+
+def _get_quiz_answer_lock(user_id: int) -> asyncio.Lock:
+    lock = _QUIZ_ANSWER_LOCKS.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _QUIZ_ANSWER_LOCKS[user_id] = lock
+    return lock
+
+
 @router.callback_query(F.data.startswith("th:quiz_answer:"))
 async def cb_therapy_quiz_answer(callback: CallbackQuery):
     user_id = callback.from_user.id
-    session = THERAPY_QUIZ_SESSIONS.get(user_id)
-    if not session:
-        await callback.answer()
-        return
-    chosen = int(callback.data.split(":")[2])
-    q = session["questions"][session["idx"]]
-    is_correct = chosen == q["correct_index"]
-    if is_correct:
-        session["correct"] += 1
-    alert_text = "✅ Верно!" if is_correct else f"❌ Неверно.{(' ' + q['explanation']) if q.get('explanation') else ''}"
-    await callback.answer(alert_text, show_alert=not is_correct)
+    async with _get_quiz_answer_lock(user_id):
+        session = THERAPY_QUIZ_SESSIONS.get(user_id)
+        if not session:
+            await callback.answer()
+            return
+        chosen = int(callback.data.split(":")[2])
+        q = session["questions"][session["idx"]]
+        is_correct = chosen == q["correct_index"]
+        if is_correct:
+            session["correct"] += 1
+        session["idx"] += 1
+        finished = session["idx"] >= session["total"]
+        if finished:
+            THERAPY_QUIZ_SESSIONS.pop(user_id, None)
+            if session["kind"] == "topic_tests":
+                record_topic_quiz_completed(
+                    user_id, session["sid"], session["tid"], session["correct"], session["total"],
+                )
 
-    session["idx"] += 1
-    if session["idx"] >= session["total"]:
-        THERAPY_QUIZ_SESSIONS.pop(user_id, None)
-        if session["kind"] == "topic_tests":
-            record_topic_quiz_completed(user_id, session["sid"], session["tid"], session["correct"], session["total"])
-        text, keyboard = render_quiz_summary(session, aborted=False)
-    else:
-        text, keyboard = render_quiz_question(session)
-    await tb.safe_edit_text(callback.message, text, parse_mode="HTML", reply_markup=keyboard)
+        alert_text = (
+            "✅ Верно!" if is_correct else f"❌ Неверно.{(' ' + q['explanation']) if q.get('explanation') else ''}"
+        )
+        await callback.answer(alert_text, show_alert=not is_correct)
+
+        if finished:
+            text, keyboard = render_quiz_summary(session, aborted=False)
+        else:
+            text, keyboard = render_quiz_question(session)
+        await tb.safe_edit_text(callback.message, text, parse_mode="HTML", reply_markup=keyboard)
 
 
 @router.callback_query(F.data == "th:quiz_stop")

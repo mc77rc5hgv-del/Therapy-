@@ -213,6 +213,31 @@ changes the content model):
   to jump to one of these; `/search` and the "🔎 Поиск" button both arm the same
   `TH_SEARCH_PENDING`, clearing `ADMIN_BROADCAST_PENDING` for that user first (see Admin below).
 
+### Deep links (`/start` payload)
+
+`therapy_handlers.resolve_deep_link(payload)` parses a `/start` payload of the form
+`topic__<section_id>__<topic_id>` or `section__<section_id>` (`"__"` chosen as the separator
+specifically because neither section ids — plain lowercase letters — nor topic ids — digits with a
+`.`, e.g. `"1.1"` — ever contain an underscore, so it can't collide with a real id) into
+`("topic"|"section", section_id, topic_id|None)`, or `None` for anything unrecognized — a stale,
+malformed, or hand-typed-wrong payload must never crash `/start`, it just silently falls through to
+the normal main menu (`cmd_start`'s `deep_link = ... if len(payload_parts) > 1 else None`). A topic
+deep link marks the topic opened in progress the same way tapping into it normally would
+(`_open_deep_link()` calls `mark_topic_opened()`); a section deep link does not, since opening a
+*section* isn't what `therapy_progress` tracks. `build_topic_deep_link_payload()`/
+`build_section_deep_link_payload()` are the inverse (used today only to build the example URL shown
+on the admin panel — see below), so a future feature (e.g. a "🔗 Ссылка" button on the topic hub)
+constructs the same payload format rather than inventing a second one.
+
+`telegram_bot.BOT_USERNAME` is fetched once via `bot.get_me()` at the top of `main()` (before
+`start_polling`) — empty until then, including for the whole lifetime of the test suite, which never
+calls `main()`. `build_deep_link_url(payload)` returns a real `https://t.me/<username>?start=...`
+URL once `BOT_USERNAME` is known, and an honest placeholder string (payload included, no fake
+domain) otherwise, rather than either crashing or silently emitting a broken link — `get_admin_menu_text()`
+shows the URL format (with `<sid>`/`<tid>` placeholders) so the admin can hand-build a real one for a
+specific topic when writing a broadcast (see "📣 Разослать всем" below); nothing currently builds
+this automatically into the broadcast text itself.
+
 ### Quiz engine (`mcq[]` questions)
 
 `THERAPY_QUIZ_SESSIONS: dict[user_id -> session]` — plain in-memory dict, same shape/lifecycle as
@@ -236,6 +261,26 @@ process is a slow memory leak. Rather than a background `asyncio` task, `start_t
 a lazy sweep (`_sweep_stale_quiz_sessions()`, `QUIZ_SESSION_TTL_SECONDS = 3h`) every time ANY user
 starts a new quiz — the only place the dict's size grows, so it's also the cheapest place to shrink
 it. Each session carries `started_at` (`time.time()` at creation) for exactly this purpose.
+
+**`cb_therapy_quiz_answer` is guarded by a per-user `asyncio.Lock`** (`_QUIZ_ANSWER_LOCKS`,
+`_get_quiz_answer_lock()`) around its ENTIRE body, not just the `session` mutation — a real bug
+that shipped and got caught by `tests/test_therapy.py`'s `check_quiz_answer_race_condition()`
+(which drives two genuinely concurrent `asyncio.gather()`ed calls through a fake `callback.answer()`
+that forces a real context-switch point, not just two sequential calls): a fast double-tap on an
+answer button fires two concurrent invocations of this handler for the same `user_id`. Reordering
+the mutation (`idx`/`correct`/pop/`record_topic_quiz_completed`) to happen before the function's
+first `await` looked sufficient at first — and it does stop the double-count/skipped-question part
+— but the RENDER step (`render_quiz_question`/`render_quiz_summary`) still reads the live, shared
+`session` dict again *after* that `await`, so a second truly-concurrent call can still race ahead
+and mutate `session["idx"]` further (or pop it) in the gap, and the first call then renders a
+question index that's already gone (`IndexError`) or stale. Locking the whole body is what actually
+closes this: a second call can't even begin reading `session` until the first has fully finished,
+including its final `safe_edit_text` — same reasoning as `vmeda-biology-bot`'s `AI_USER_LOCKS`, a
+directly analogous fix for the same class of bug (rapid duplicate taps racing state mutation and a
+later re-read of that same state). `_QUIZ_ANSWER_LOCKS` is deliberately never pruned (unlike
+`THERAPY_QUIZ_SESSIONS`) — a bare `asyncio.Lock` per user who has ever answered a quiz question is
+cheap and bounded by total distinct users, not by time or by how many quizzes they take, so it's
+in the same "never cleaned up, and doesn't need to be" bucket as `stats["user_names"]`.
 
 ### Search (`search_therapy()`)
 

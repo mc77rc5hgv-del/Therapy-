@@ -142,6 +142,18 @@ async def safe_edit_text(message, text, **kwargs) -> None:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# Заполняется в main() через bot.get_me() перед стартом polling — нужно только для того, чтобы
+# показать админу готовую ссылку на тему (см. get_admin_menu_text()); до первого запуска main()
+# (например, в тестах, которые не поднимают polling) остаётся пустой строкой — build_deep_link_url()
+# отдаёт заглушку вместо реального t.me/... в этом случае, а не падает.
+BOT_USERNAME: str = ""
+
+
+def build_deep_link_url(payload: str) -> str:
+    if not BOT_USERNAME:
+        return f"(имя бота станет известно после первого запуска; payload: {payload})"
+    return f"https://t.me/{BOT_USERNAME}?start={payload}"
+
 
 # ==================== ГЛАВНОЕ МЕНЮ ====================
 # get_main_menu() ссылается на глобальное имя therapy_handlers, которое появится в этом модуле
@@ -155,6 +167,26 @@ def get_main_menu_text() -> str:
     return "👋 <b>Бот «Терапия» (ВМедА)</b>\n\nВыбери раздел дисциплины:"
 
 
+async def _open_deep_link(message: Message, user_id: int, deep_link: tuple) -> None:
+    """Отправляет экран, на который ведёт распознанный /start-payload (см.
+    therapy_handlers.resolve_deep_link) — тему сразу с отметкой "открыта" в прогрессе, раздел без
+    неё (открытие темы, а не самого раздела, — то, что реально считается прогрессом)."""
+    kind, section_id, topic_id = deep_link
+    if kind == "topic":
+        therapy_handlers.mark_topic_opened(user_id, section_id, topic_id)
+        await message.answer(
+            therapy_handlers.get_topic_text(section_id, topic_id),
+            parse_mode="HTML",
+            reply_markup=therapy_handlers.get_topic_keyboard(section_id, topic_id, user_id),
+        )
+    else:  # kind == "section"
+        await message.answer(
+            therapy_handlers.get_section_text(section_id),
+            parse_mode="HTML",
+            reply_markup=therapy_handlers.get_section_keyboard(section_id),
+        )
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     user_id = message.from_user.id
@@ -164,6 +196,12 @@ async def cmd_start(message: Message):
         stats["user_username"][str(user_id)] = message.from_user.username
     stats["user_names"][str(user_id)] = message.from_user.full_name
     save_stats()
+
+    payload_parts = message.text.split(maxsplit=1)
+    deep_link = therapy_handlers.resolve_deep_link(payload_parts[1]) if len(payload_parts) > 1 else None
+    if deep_link:
+        await _open_deep_link(message, user_id, deep_link)
+        return
 
     await message.answer(
         get_main_menu_text(),
@@ -260,6 +298,9 @@ def get_admin_menu_text() -> str:
         "",
         "Разделов курса: " + str(len(THERAPY["sections"])),
         "Тем: " + str(sum(len(s["topics"]) for s in THERAPY["sections"])),
+        "",
+        "🔗 Ссылка на тему для рассылки: "
+        + build_deep_link_url(therapy_handlers.build_topic_deep_link_payload("<sid>", "<tid>")),
     ]
     return "\n".join(lines)
 
@@ -390,8 +431,11 @@ async def setup_bot_commands() -> None:
 
 
 async def main():
+    global BOT_USERNAME
     logger.info("Бот запускается...")
     logger.info("Загружена статистика: %d пользователей", len(stats["total_users"]))
+    me = await bot.get_me()
+    BOT_USERNAME = me.username
     await setup_bot_commands()
     try:
         await dp.start_polling(bot)
