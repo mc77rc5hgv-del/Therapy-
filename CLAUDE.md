@@ -238,6 +238,14 @@ shows the URL format (with `<sid>`/`<tid>` placeholders) so the admin can hand-b
 specific topic when writing a broadcast (see "📣 Разослать всем" below); nothing currently builds
 this automatically into the broadcast text itself.
 
+**"📤 Поделиться"** on the topic hub and section hub (`_build_share_button()`) is a `url=`
+(not `callback_data=`) button pointing at `https://t.me/share/url?url=<deep link>&text=<caption>` —
+Telegram's own native forward/share picker, not a bare link dumped into the chat. Same `BOT_USERNAME`
+dependency as above: `_build_share_button()` returns `None` (button simply omitted, never a broken
+link) until `BOT_USERNAME` is known, which in practice means never during the test suite (`main()`
+is never called there) and always in production (set before `start_polling`). Both keyboards check
+`if share_button:` before adding the row for exactly this reason.
+
 ### Quiz engine (`mcq[]` questions)
 
 `THERAPY_QUIZ_SESSIONS: dict[user_id -> session]` — plain in-memory dict, same shape/lifecycle as

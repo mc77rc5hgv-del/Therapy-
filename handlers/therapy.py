@@ -70,6 +70,7 @@ import asyncio
 import html
 import random
 import time
+import urllib.parse
 
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton
@@ -460,6 +461,24 @@ def render_comparison_table(table: dict) -> str:
     return "\n".join(lines).strip()
 
 
+# ==================== «поделиться» ====================
+# Кнопка-URL на t.me/share/url — открывает нативный диалог пересылки Telegram (тот же, что при
+# "Переслать"), а не просто отдаёт голую ссылку текстом. Требует BOT_USERNAME (telegram_bot.py,
+# заполняется через bot.get_me() в main() перед стартом polling) — до этого момента (в частности,
+# на протяжении всего прогона тестов, которые никогда не вызывают main()) отдаём None вместо
+# кнопки со сломанной ссылкой без t.me/<бот>/....
+
+def _build_share_button(deep_link_payload: str, share_text: str):
+    if not tb.BOT_USERNAME:
+        return None
+    deep_link = tb.build_deep_link_url(deep_link_payload)
+    share_url = (
+        "https://t.me/share/url?url=" + urllib.parse.quote(deep_link, safe="")
+        + "&text=" + urllib.parse.quote(share_text, safe="")
+    )
+    return InlineKeyboardButton(text="📤 Поделиться", url=share_url)
+
+
 # ==================== keyboards ====================
 
 def get_therapy_menu_keyboard(user_id: int = None):
@@ -500,6 +519,9 @@ def get_section_keyboard(section_id: str):
     content_builder.adjust(2)
     builder.attach(content_builder)
 
+    share_button = _build_share_button(build_section_deep_link_payload(section_id), f"{section['title']} — Терапия")
+    if share_button:
+        builder.row(share_button)
     builder.row(InlineKeyboardButton(text="🔙 К разделам", callback_data="th:menu"))
     return builder.as_markup()
 
@@ -531,6 +553,12 @@ def get_topic_keyboard(section_id: str, topic_id: str, user_id: int):
 
     fav_text = "★ Убрать из избранного" if is_topic_favorite(user_id, section_id, topic_id) else "☆ В избранное"
     builder.row(InlineKeyboardButton(text=fav_text, callback_data=f"th:fav_toggle:{section_id}:{topic_id}"))
+    topic = topics[idx]
+    share_button = _build_share_button(
+        build_topic_deep_link_payload(section_id, topic_id), f"{topic['id']} {topic['title']} — Терапия",
+    )
+    if share_button:
+        builder.row(share_button)
     builder.row(InlineKeyboardButton(text="🔙 К разделу", callback_data=f"th:section:{section_id}"))
     builder.row(InlineKeyboardButton(text="🏠 Меню", callback_data="th:menu"))
     return builder.as_markup()

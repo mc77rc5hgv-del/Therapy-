@@ -7,6 +7,7 @@
 "честная заглушка" (_status_screen) действительно показывается для пустых material/questions/
 table, а не выдуманный контент."""
 import asyncio
+import urllib.parse
 from _bootstrap import tb
 from html.parser import HTMLParser
 
@@ -214,6 +215,7 @@ async def run():
     check_back_keyboard_no_duplicate_menu_button()
     await check_quiz_answer_race_condition()
     await check_deep_links()
+    await check_share_button()
 
     print("\nВСЕ ПРОВЕРКИ ПРОЙДЕНЫ")
 
@@ -736,6 +738,43 @@ async def check_deep_links():
 
     tb.stats["therapy_progress"].pop(str(uid), None)
     print("OK deep links: валидные/битые payload'ы, /start сразу открывает тему/раздел, build_deep_link_url")
+
+
+async def check_share_button():
+    uid = 777010
+
+    # без BOT_USERNAME (обычное состояние тестов) кнопки "Поделиться" нет — только явная проверка
+    assert th._build_share_button("topic__respiratory__1.1", "текст") is None
+    cb = FakeCB("th:topic:respiratory:1.1", uid=uid)
+    await th.cb_therapy_topic(cb)
+    _, markup = cb.message.sent_texts[-1]
+    labels = [b.text for row in markup.inline_keyboard for b in row]
+    assert not any("Поделиться" in t for t in labels)
+
+    tb.BOT_USERNAME = "TherapyBot"
+    try:
+        button = th._build_share_button("topic__respiratory__1.1", "ХОБЛ — Терапия")
+        assert button is not None
+        assert button.url.startswith("https://t.me/share/url?url=")
+        assert "https%3A%2F%2Ft.me%2FTherapyBot%3Fstart%3Dtopic__respiratory__1.1" in button.url
+        assert "%D0%A5%D0%9E%D0%91%D0%9B" in button.url or "ХОБЛ" in urllib.parse.unquote(button.url)
+
+        cb = FakeCB("th:topic:respiratory:1.1", uid=uid)
+        await th.cb_therapy_topic(cb)
+        _, markup = cb.message.sent_texts[-1]
+        share_buttons = [b for row in markup.inline_keyboard for b in row if b.text == "📤 Поделиться"]
+        assert len(share_buttons) == 1
+        assert share_buttons[0].url.startswith("https://t.me/share/url?url=")
+        assert share_buttons[0].callback_data is None, "URL-кнопка не должна иметь callback_data"
+
+        cb = FakeCB("th:section:respiratory", uid=uid)
+        await th.cb_therapy_section(cb)
+        _, markup = cb.message.sent_texts[-1]
+        share_buttons = [b for row in markup.inline_keyboard for b in row if b.text == "📤 Поделиться"]
+        assert len(share_buttons) == 1
+    finally:
+        tb.BOT_USERNAME = ""
+    print('OK кнопка "📤 Поделиться": отсутствует без BOT_USERNAME, валидная t.me/share/url-ссылка с ним')
 
 
 if __name__ == "__main__":
