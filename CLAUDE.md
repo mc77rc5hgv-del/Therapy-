@@ -172,6 +172,47 @@ split beyond that single file yet — if a second subject/section family is ever
 top-level `<name>.json`, following `repositories/knowledge.py`'s existing one-`open()`-per-file
 pattern, rather than growing `handlers/therapy.py` to cover unrelated subjects.
 
+**Convenience layer on top of the tree above** (all added for navigation ergonomics, none of it
+changes the content model):
+- **Status icons** — `get_section_keyboard()` prefixes every topic/section-block button with
+  ✅ (theory AND tests/material filled) / 📥 (partially filled) / 🗓 (nothing yet, `_topic_status_icon()`)
+  so a student can see what's actually worth opening without tapping in first. Reuses the exact
+  same `_section_content_filled()`/`_topic_content_filled()` predicates the admin coverage screen
+  uses — one "is this filled" source of truth for both.
+- **Topic carousel** — `get_topic_keyboard()` adds ◀️/▶️ buttons to the adjacent topic in the same
+  section's `topics[]` order (omitted at the first/last topic, never wraps around), so browsing
+  through a section's topics doesn't require going back to the section hub after each one.
+- **Favorites** (`stats["therapy_favorites"][str(uid)] = ["sid:tid", ...]`, flat list — JSON has no
+  set type and a nested dict would add nothing here) — `☆ В избранное`/`★ Убрать из избранного`
+  toggle on the topic-hub screen (`th:fav_toggle:{sid}:{tid}`), `⭐ Избранное` entry point on the
+  main menu (`th:favorites`) listing them. `get_favorite_topics()` silently drops any stored key
+  whose topic no longer exists in `therapy.json` — a favorite surviving a content restructure is
+  not worth a crash.
+- **"▶️ Продолжить"** — `get_therapy_menu_keyboard(user_id)` looks up the most recent
+  `last_viewed_at` across `stats["therapy_progress"][uid]` (`get_last_viewed_topic()`) and, if any,
+  puts a button straight to that topic at the very top of the main menu. `user_id=None` (no
+  resolvable user) just omits it rather than raising — every call site that has a real user passes
+  it; nothing currently calls the keyboard without one, but the signature stays defensive.
+- **"🎲 Случайный вопрос"** — `start_random_practice()` draws one question from `_all_mcq_pool()`
+  (every topic's `tests.mcq` + every section's `boundary_control.mcq`, pooled) as a one-question
+  `THERAPY_QUIZ_SESSIONS` entry (`kind="random_practice"`, `total=1`). Deliberately NOT recorded
+  into `therapy_progress` on completion (`record_topic_quiz_completed()` is only called for
+  `kind="topic_tests"`, see the quiz engine section below) — a pooled random question isn't
+  attributable to one topic's mastery. An empty pool (true today — no `mcq` exists anywhere yet)
+  answers with an honest alert instead of silently doing nothing; the button itself is always shown
+  on the main menu regardless of pool size, per the "hide vs. relabel" pitfall below — it doesn't
+  vanish just because there's nothing in it yet.
+- **"🏠 Меню" everywhere** — `get_back_keyboard()` appends a menu-shortcut button on every screen
+  whose `back_callback` isn't already `"th:menu"`, so reaching the very start again never needs more
+  than one tap regardless of how deep the current screen is. Adding a new content screen that calls
+  `get_back_keyboard()` gets this for free; a screen with a hand-rolled keyboard (like
+  `get_topic_keyboard()`/`render_quiz_summary()`) adds the same row explicitly for the same reason —
+  keep doing that rather than reverting to a single "🔙 Назад" on any new hand-rolled keyboard.
+- **Quick-access commands** — `/menu`, `/search`, `/progress`, `/help` (`telegram_bot.py`) mirror
+  the equivalent main-menu buttons so a student doesn't have to navigate back to the menu first just
+  to jump to one of these; `/search` and the "🔎 Поиск" button both arm the same
+  `TH_SEARCH_PENDING`, clearing `ADMIN_BROADCAST_PENDING` for that user first (see Admin below).
+
 ### Quiz engine (`mcq[]` questions)
 
 `THERAPY_QUIZ_SESSIONS: dict[user_id -> session]` — plain in-memory dict, same shape/lifecycle as
@@ -231,8 +272,9 @@ rather than pre-building unused machinery.
 ### Stats persistence
 
 `stats["total_users"]` (a set, serialized to/from a list for JSON, same convention as
-`vmeda-biology-bot`), `start_count`, `user_names`/`user_username`, `therapy_progress` (see above).
-No referral system or subscriptions exist yet — add them the same way `vmeda-biology-bot` did (a
+`vmeda-biology-bot`), `start_count`, `user_names`/`user_username`, `therapy_progress` (see above),
+`therapy_favorites` (see Navigation above). No referral system or subscriptions exist yet — add
+them the same way `vmeda-biology-bot` did (a
 new top-level `stats` key, `.setdefault()` in both branches of `load_stats()`, a `save_stats()`
 call after every mutation) if/when the course actually needs them; don't assume they're wanted just
 because the sister project has them.

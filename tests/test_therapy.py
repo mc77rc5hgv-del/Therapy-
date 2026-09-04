@@ -127,10 +127,12 @@ async def run():
                 assert th.status_label(block["status"]) in text or th.esc(block["status"]) in text, text
                 assert th.esc(block["plan_note"]) in text, (ctype, text)
             data = kb_data(markup)
-            assert data == [f"th:section:{sid}"], data
+            # get_back_keyboard добавляет «🏠 Меню» на любом экране глубже главного
+            assert data == [f"th:section:{sid}", "th:menu"], data
         print(f"OK секционные блоки раздела {sid} отрендерены (заглушки — честные, без контента)")
 
-        for topic in section["topics"]:
+        topic_ids_in_order = [t["id"] for t in section["topics"]]
+        for i, topic in enumerate(section["topics"]):
             tid = topic["id"]
             cb = FakeCB(f"th:topic:{sid}:{tid}")
             await th.cb_therapy_topic(cb)
@@ -138,7 +140,19 @@ async def run():
             check_html(text)
             data = kb_data(markup)
             assert f"th:section:{sid}" in data
+            assert "th:menu" in data
+            assert f"th:fav_toggle:{sid}:{tid}" in data
             assert any(d.startswith(f"th:content:{sid}:{tid}:") for d in data), data
+            # карусель тем: есть "пред." везде кроме первой темы раздела, "след." везде кроме последней
+            has_prev = any(d == f"th:topic:{sid}:{topic_ids_in_order[i - 1]}" for d in data) if i > 0 else None
+            has_next = (
+                any(d == f"th:topic:{sid}:{topic_ids_in_order[i + 1]}" for d in data)
+                if i < len(topic_ids_in_order) - 1 else None
+            )
+            if i > 0:
+                assert has_prev, (sid, tid, data)
+            if i < len(topic_ids_in_order) - 1:
+                assert has_next, (sid, tid, data)
 
             for ctype, _label in th.TOPIC_CONTENT_TYPES:
                 cb = FakeCB(f"th:content:{sid}:{tid}:{ctype}")
@@ -150,8 +164,8 @@ async def run():
                 if not has_content:
                     assert th.esc(block["plan_note"]) in text, (sid, tid, ctype, text)
                 data = kb_data(markup)
-                assert data == [f"th:topic:{sid}:{tid}"], data
-        print(f"OK темы раздела {sid}: {len(section['topics'])} шт., теория/тесты отрендерены")
+                assert data == [f"th:topic:{sid}:{tid}", "th:menu"], data
+        print(f"OK темы раздела {sid}: {len(section['topics'])} шт., теория/тесты/карусель/избранное отрендерены")
 
     # неизвестная тема/контент -> alert, без падения
     cb_bad = FakeCB(f"th:topic:{tb.THERAPY['sections'][0]['id']}:no_such_topic")
@@ -192,6 +206,12 @@ async def run():
     await check_admin_coverage()
     await check_admin_broadcast()
     await check_quiz_session_ttl_sweep()
+    await check_favorites()
+    await check_continue_button()
+    await check_random_practice()
+    await check_status_icons()
+    await check_bot_commands()
+    check_back_keyboard_no_duplicate_menu_button()
 
     print("\nВСЕ ПРОВЕРКИ ПРОЙДЕНЫ")
 
@@ -442,6 +462,179 @@ async def check_quiz_session_ttl_sweep():
     finally:
         topic["tests"]["mcq"] = original_mcq
     print("OK quiz-сессии: просроченные сессии выметаются при старте нового теста")
+
+
+async def check_favorites():
+    uid = 777001
+    tb.stats["therapy_favorites"].pop(str(uid), None)
+
+    assert not th.is_topic_favorite(uid, "respiratory", "1.1")
+    text = th.get_favorites_text(uid)
+    assert "Пока пусто" in text
+    assert th.get_favorite_topics(uid) == []
+
+    # экран темы предлагает "☆ В избранное", пока не добавлено
+    cb = FakeCB("th:topic:respiratory:1.1", uid=uid)
+    await th.cb_therapy_topic(cb)
+    _, markup = cb.message.sent_texts[-1]
+    labels = [b.text for row in markup.inline_keyboard for b in row]
+    assert "☆ В избранное" in labels
+
+    # переключаем -> добавлено
+    cb = FakeCB("th:fav_toggle:respiratory:1.1", uid=uid)
+    await th.cb_therapy_fav_toggle(cb)
+    assert cb._answers[0][0] == "⭐ Добавлено в избранное"
+    assert th.is_topic_favorite(uid, "respiratory", "1.1")
+    _, markup = cb.message.sent_texts[-1]
+    labels = [b.text for row in markup.inline_keyboard for b in row]
+    assert "★ Убрать из избранного" in labels
+
+    text = th.get_favorites_text(uid)
+    assert "ХОБЛ" in text
+    kb_markup = th.get_favorites_keyboard(uid)
+    assert "th:topic:respiratory:1.1" in kb_data(kb_markup)
+
+    cb = FakeCB("th:favorites", uid=uid)
+    await th.cb_therapy_favorites(cb)
+    text, markup = cb.message.sent_texts[-1]
+    check_html(text)
+    assert "ХОБЛ" in text
+    assert "th:topic:respiratory:1.1" in kb_data(markup)
+
+    # переключаем обратно -> убрано
+    cb = FakeCB("th:fav_toggle:respiratory:1.1", uid=uid)
+    await th.cb_therapy_fav_toggle(cb)
+    assert cb._answers[0][0] == "☆ Убрано из избранного"
+    assert not th.is_topic_favorite(uid, "respiratory", "1.1")
+    assert th.get_favorite_topics(uid) == []
+
+    # неизвестная тема -> alert, без падения
+    cb = FakeCB("th:fav_toggle:respiratory:no_such_topic", uid=uid)
+    await th.cb_therapy_fav_toggle(cb)
+    assert cb._answers[0][1] is True
+
+    tb.stats["therapy_favorites"].pop(str(uid), None)
+    print("OK избранное: переключение туда-обратно, экран избранного, метка на экране темы")
+
+
+async def check_continue_button():
+    uid = 777002
+    tb.stats["therapy_progress"].pop(str(uid), None)
+
+    # без просмотренных тем -> кнопки "Продолжить" нет
+    markup = th.get_therapy_menu_keyboard(uid)
+    assert "th:topic:respiratory:1.1" not in kb_data(markup)
+
+    cb = FakeCB("th:topic:cardiovascular:2.2", uid=uid)
+    await th.cb_therapy_topic(cb)
+
+    markup = th.get_therapy_menu_keyboard(uid)
+    buttons = [(b.text, b.callback_data) for row in markup.inline_keyboard for b in row]
+    assert buttons[0][1] == "th:topic:cardiovascular:2.2", buttons
+    assert "Продолжить" in buttons[0][0] and "Артериальная гипертензия" in buttons[0][0]
+
+    # без user_id (например, вызов без контекста пользователя) кнопка не строится, без исключения
+    markup_anon = th.get_therapy_menu_keyboard()
+    assert "th:topic:cardiovascular:2.2" not in kb_data(markup_anon)
+
+    tb.stats["therapy_progress"].pop(str(uid), None)
+    print('OK кнопка "▶️ Продолжить": появляется после первого просмотра темы, ведёт на неё')
+
+
+async def check_random_practice():
+    uid = 777003
+
+    # пока во всей базе нет ни одного mcq -> честный alert, без сессии
+    assert th._all_mcq_pool() == []
+    cb = FakeCB("th:random_practice", uid=uid)
+    await th.cb_therapy_random_practice(cb)
+    assert cb._answers[0][1] is True
+    assert uid not in th.THERAPY_QUIZ_SESSIONS
+
+    topic = th.get_topic("respiratory", "1.2")
+    original_mcq = topic["tests"]["mcq"]
+    topic["tests"]["mcq"] = [
+        {"question": "Разовый вопрос?", "options": ["Да", "Нет"], "correct_index": 0, "explanation": ""},
+    ]
+    try:
+        cb = FakeCB("th:random_practice", uid=uid)
+        await th.cb_therapy_random_practice(cb)
+        assert uid in th.THERAPY_QUIZ_SESSIONS
+        session = th.THERAPY_QUIZ_SESSIONS[uid]
+        assert session["kind"] == "random_practice" and session["total"] == 1
+        text, markup = cb.message.sent_texts[-1]
+        check_html(text)
+        assert "Разовый вопрос?" in text
+
+        cb = FakeCB("th:quiz_answer:0", uid=uid)
+        await th.cb_therapy_quiz_answer(cb)
+        assert uid not in th.THERAPY_QUIZ_SESSIONS
+        # разовая тренировка не по конкретной теме -> не пишется в прогресс темы 1.2
+        assert "1.2" not in tb.stats["therapy_progress"].get(str(uid), {})
+    finally:
+        topic["tests"]["mcq"] = original_mcq
+    print('OK "🎲 Случайный вопрос": честный alert при пустой базе, рабочая разовая сессия, не пишется в прогресс темы')
+
+
+async def check_status_icons():
+    topic = th.get_topic("respiratory", "1.3")
+    assert th._topic_status_icon(topic) == "🗓"
+
+    original_material = topic["theory"]["material"]
+    topic["theory"]["material"] = ["текст"]
+    try:
+        assert th._topic_status_icon(topic) == "📥"
+        markup = th.get_section_keyboard("respiratory")
+        labels = [b.text for row in markup.inline_keyboard for b in row]
+        assert any(t.startswith("📥 1.3") for t in labels), labels
+
+        topic["tests"]["self_check"] = ["вопрос?"]
+        assert th._topic_status_icon(topic) == "✅"
+        topic["tests"]["self_check"] = []
+    finally:
+        topic["theory"]["material"] = original_material
+    assert th._topic_status_icon(topic) == "🗓"
+    print("OK иконки статуса тем (🗓/📥/✅) отражают реальную заполненность")
+
+
+async def check_bot_commands():
+    uid = 777004
+    tb.TH_SEARCH_PENDING.discard(uid)
+    tb.ADMIN_BROADCAST_PENDING.add(uid)
+
+    msg = FakeMsg()
+    m = type("M", (), {"from_user": FakeUser(uid), "answer": msg.answer})()
+    await tb.cmd_menu(m)
+    text, markup = msg.sent_texts[-1]
+    check_html(text)
+    assert any(d.startswith("th:section:") for d in kb_data(markup))
+
+    msg = FakeMsg()
+    m = type("M", (), {"from_user": FakeUser(uid), "answer": msg.answer})()
+    await tb.cmd_progress(m)
+    text, _ = msg.sent_texts[-1]
+    assert "Мой прогресс" in text
+
+    msg = FakeMsg()
+    m = type("M", (), {"from_user": FakeUser(uid), "answer": msg.answer})()
+    await tb.cmd_search(m)
+    assert uid in tb.TH_SEARCH_PENDING
+    assert uid not in tb.ADMIN_BROADCAST_PENDING, "поиск и рассылка — взаимоисключающие ожидания"
+    tb.TH_SEARCH_PENDING.discard(uid)
+
+    msg = FakeMsg()
+    m = type("M", (), {"from_user": FakeUser(uid), "answer": msg.answer})()
+    await tb.cmd_help(m)
+    text, markup = msg.sent_texts[-1]
+    check_html(text)
+    assert "/menu" in text and "/search" in text and "/progress" in text
+    print("OK команды /menu /progress /search /help: отвечают, гейт очередей взаимоисключающий")
+
+
+def check_back_keyboard_no_duplicate_menu_button():
+    markup = th.get_back_keyboard("th:menu")
+    assert kb_data(markup) == ["th:menu"], "на самом главном меню не должно быть второй кнопки в меню"
+    print('OK get_back_keyboard("th:menu") не дублирует кнопку меню')
 
 
 if __name__ == "__main__":

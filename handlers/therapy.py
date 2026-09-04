@@ -51,11 +51,23 @@ vmeda-biology-bot). Пока не используется ни для гейт�
 чек-лист по структуре плана, какие блоки/темы всё ещё рендерят заглушку, а какие уже реально
 заполнены. Отдельная вещь от `search_therapy()` (тот ищет по тексту, этот считает "заполнено/не
 заполнено" по каждому листу дерева контента) — нужен, чтобы пользователь как автор контента видел
-прогресс наполнения бота, а не только прогресс студентов.
+прогресс наполнения бота, а не только прогресс студентов. Те же предикаты (`_section_content_filled`/
+`_topic_content_filled`) теперь ещё и красят кнопки разделов/тем иконкой ✅/📥/🗓 в обычной
+навигации — один источник правды "заполнено или нет" на оба применения.
+
+**Навигация** — темы внутри раздела листаются каруселью (◀️/▶️ на экране темы, без возврата к
+списку раздела на каждый шаг), у каждой темы есть переключатель «⭐ В избранное»
+(`stats["therapy_favorites"]`), главное меню предлагает «▶️ Продолжить» (последняя просмотренная
+тема по `therapy_progress`) и «🎲 Случайный вопрос» (одна mcq-вопрос из ВСЕЙ базы, не привязана к
+конкретной теме — `start_random_practice()`, тот же `THERAPY_QUIZ_SESSIONS`, просто `kind
+="random_practice"` и `total=1`; в progress не пишется, это разовая тренировка, а не прогресс по
+теме). `get_back_keyboard()` сама добавляет кнопку «🏠 Меню» на любом экране глубже главного —
+чтобы вернуться в начало не нужно было жать «Назад» несколько раз подряд.
 
 Импортирует telegram_bot как tb — тот же паттерн, что и handlers/physiology.py в vmeda-biology-bot
 (поздно подключаемый модуль, использующий DIVIDER/safe_edit_text/stats, уже определённые там)."""
 import html
+import random
 import time
 
 from aiogram import F, Router
@@ -191,6 +203,77 @@ def get_therapy_progress_text(user_id: int) -> str:
     return "\n".join(lines)
 
 
+def get_last_viewed_topic(user_id: int):
+    """(section_id, topic_id) последней открытой темы этого пользователя, или None — используется
+    кнопкой «▶️ Продолжить» на главном меню."""
+    all_p = tb.stats["therapy_progress"].get(str(user_id), {})
+    candidates = [(key, entry) for key, entry in all_p.items() if entry.get("last_viewed_at")]
+    if not candidates:
+        return None
+    key, _ = max(candidates, key=lambda kv: kv[1]["last_viewed_at"])
+    section_id, topic_id = key.split(":", 1)
+    if not get_topic(section_id, topic_id):
+        return None
+    return section_id, topic_id
+
+
+# ==================== избранное ====================
+# stats["therapy_favorites"][str(uid)] = ["sid:tid", ...] — плоский список ключей той же формы,
+# что _progress_key() (JSON не хранит set, а вложенный dict здесь не даёт ничего сверх списка).
+
+def is_topic_favorite(user_id: int, section_id: str, topic_id: str) -> bool:
+    return _progress_key(section_id, topic_id) in tb.stats["therapy_favorites"].get(str(user_id), [])
+
+
+def toggle_topic_favorite(user_id: int, section_id: str, topic_id: str) -> bool:
+    """Переключает избранное для темы, возвращает новое состояние (True = теперь в избранном)."""
+    favs = tb.stats["therapy_favorites"].setdefault(str(user_id), [])
+    key = _progress_key(section_id, topic_id)
+    if key in favs:
+        favs.remove(key)
+        is_fav = False
+    else:
+        favs.append(key)
+        is_fav = True
+    tb.save_stats()
+    return is_fav
+
+
+def get_favorite_topics(user_id: int) -> list:
+    """Темы из избранного, которые реально существуют в текущем therapy.json — тема могла быть
+    переименована/убрана из плана уже после того, как её кто-то отметил звёздочкой."""
+    result = []
+    for key in tb.stats["therapy_favorites"].get(str(user_id), []):
+        section_id, topic_id = key.split(":", 1)
+        topic = get_topic(section_id, topic_id)
+        if topic:
+            result.append((section_id, topic_id, topic))
+    return result
+
+
+def get_favorites_text(user_id: int) -> str:
+    favorites = get_favorite_topics(user_id)
+    if not favorites:
+        return (
+            "⭐ <b>Избранное</b>\n\n"
+            "Пока пусто — на экране темы есть кнопка «☆ В избранное», отмеченные темы появятся здесь."
+        )
+    lines = ["⭐ <b>Избранное</b>", tb.DIVIDER]
+    for section_id, topic_id, topic in favorites:
+        section = get_section(section_id)
+        lines.append(f"  • {esc(topic['id'])} {esc(topic['title'])} ({esc(section['short_title'])})")
+    return "\n".join(lines)
+
+
+def get_favorites_keyboard(user_id: int):
+    builder = InlineKeyboardBuilder()
+    for section_id, topic_id, topic in get_favorite_topics(user_id):
+        builder.button(text=f"{topic['id']} {topic['title']}", callback_data=f"th:topic:{section_id}:{topic_id}")
+    builder.adjust(1)
+    builder.row(InlineKeyboardButton(text="🔙 Меню", callback_data="th:menu"))
+    return builder.as_markup()
+
+
 # ==================== админ: покрытие контента ====================
 # Пока therapy.json — по большей части заглушки (см. модульный docstring), самому пользователю
 # предстоит вручную наполнять material/mcq/self_check/table по мере поступления слайдов/.ppt.
@@ -214,6 +297,18 @@ def _topic_content_filled(topic: dict, ctype: str) -> bool:
     if ctype == "tests":
         return bool(block.get("mcq") or block.get("self_check"))
     return bool(block.get("material"))
+
+
+def _topic_status_icon(topic: dict) -> str:
+    """✅ и теория, и тесты заполнены; 📥 заполнено частично; 🗓 пока ничего — используется в
+    get_section_keyboard(), чтобы студент видел заполненность темы, не открывая её."""
+    has_theory = _topic_content_filled(topic, "theory")
+    has_tests = _topic_content_filled(topic, "tests")
+    if has_theory and has_tests:
+        return "✅"
+    if has_theory or has_tests:
+        return "📥"
+    return "🗓"
 
 
 def get_admin_coverage_text() -> str:
@@ -333,11 +428,22 @@ def render_comparison_table(table: dict) -> str:
 
 # ==================== keyboards ====================
 
-def get_therapy_menu_keyboard():
+def get_therapy_menu_keyboard(user_id: int = None):
     builder = InlineKeyboardBuilder()
+    if user_id is not None:
+        last = get_last_viewed_topic(user_id)
+        if last:
+            section_id, topic_id = last
+            topic = get_topic(section_id, topic_id)
+            builder.row(InlineKeyboardButton(
+                text=f"▶️ Продолжить: {topic['id']} {topic['title']}",
+                callback_data=f"th:topic:{section_id}:{topic_id}",
+            ))
     for section in tb.THERAPY["sections"]:
         builder.button(text=f"{section['order']}. {section['title']}", callback_data=f"th:section:{section['id']}")
     builder.adjust(1)
+    builder.row(InlineKeyboardButton(text="🎲 Случайный вопрос", callback_data="th:random_practice"))
+    builder.row(InlineKeyboardButton(text="⭐ Избранное", callback_data="th:favorites"))
     builder.row(InlineKeyboardButton(text="🔎 Поиск по разделам", callback_data="th:search_prompt"))
     builder.row(InlineKeyboardButton(text="📊 Мой прогресс", callback_data="th:progress"))
     return builder.as_markup()
@@ -347,12 +453,16 @@ def get_section_keyboard(section_id: str):
     section = get_section(section_id)
     builder = InlineKeyboardBuilder()
     for topic in section["topics"]:
-        builder.button(text=f"{topic['id']} {topic['title']}", callback_data=f"th:topic:{section_id}:{topic['id']}")
+        icon = _topic_status_icon(topic)
+        builder.button(
+            text=f"{icon} {topic['id']} {topic['title']}", callback_data=f"th:topic:{section_id}:{topic['id']}",
+        )
     builder.adjust(1)
 
     content_builder = InlineKeyboardBuilder()
     for ctype, label in SECTION_CONTENT_TYPES:
-        content_builder.button(text=label, callback_data=f"th:section_content:{section_id}:{ctype}")
+        icon = "✅" if _section_content_filled(section, ctype) else "🗓"
+        content_builder.button(text=f"{icon} {label}", callback_data=f"th:section_content:{section_id}:{ctype}")
     content_builder.adjust(2)
     builder.attach(content_builder)
 
@@ -360,20 +470,47 @@ def get_section_keyboard(section_id: str):
     return builder.as_markup()
 
 
-def get_topic_keyboard(section_id: str, topic_id: str):
+def get_topic_keyboard(section_id: str, topic_id: str, user_id: int):
+    """Карусель тем (◀️/▶️ на соседние темы того же раздела, без возврата к списку раздела на
+    каждый шаг) + переключатель избранного + быстрый переход в меню."""
+    section = get_section(section_id)
+    topics = section["topics"]
+    idx = next(i for i, t in enumerate(topics) if t["id"] == topic_id)
+
     builder = InlineKeyboardBuilder()
     for ctype, label in TOPIC_CONTENT_TYPES:
         builder.button(text=label, callback_data=f"th:content:{section_id}:{topic_id}:{ctype}")
     builder.adjust(2)
+
+    if idx > 0:
+        prev_topic = topics[idx - 1]
+        builder.row(InlineKeyboardButton(
+            text=f"◀️ {prev_topic['id']} {prev_topic['title']}",
+            callback_data=f"th:topic:{section_id}:{prev_topic['id']}",
+        ))
+    if idx < len(topics) - 1:
+        next_topic = topics[idx + 1]
+        builder.row(InlineKeyboardButton(
+            text=f"{next_topic['id']} {next_topic['title']} ▶️",
+            callback_data=f"th:topic:{section_id}:{next_topic['id']}",
+        ))
+
+    fav_text = "★ Убрать из избранного" if is_topic_favorite(user_id, section_id, topic_id) else "☆ В избранное"
+    builder.row(InlineKeyboardButton(text=fav_text, callback_data=f"th:fav_toggle:{section_id}:{topic_id}"))
     builder.row(InlineKeyboardButton(text="🔙 К разделу", callback_data=f"th:section:{section_id}"))
+    builder.row(InlineKeyboardButton(text="🏠 Меню", callback_data="th:menu"))
     return builder.as_markup()
 
 
 def get_back_keyboard(back_callback: str, extra_buttons=None):
+    """Плюс «🏠 Меню» на любом экране глубже главного, чтобы вернуться в начало не нужно было
+    жать «Назад» несколько раз подряд по всей цепочке навигации."""
     builder = InlineKeyboardBuilder()
     for text, callback_data in extra_buttons or []:
         builder.row(InlineKeyboardButton(text=text, callback_data=callback_data))
     builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data=back_callback))
+    if back_callback != "th:menu":
+        builder.row(InlineKeyboardButton(text="🏠 Меню", callback_data="th:menu"))
     return builder.as_markup()
 
 
@@ -583,7 +720,40 @@ def render_quiz_summary(session: dict, aborted: bool):
     ])
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data=session["back_callback"]))
+    if session["back_callback"] != "th:menu":
+        builder.row(InlineKeyboardButton(text="🏠 Меню", callback_data="th:menu"))
     return text, builder.as_markup()
+
+
+def _all_mcq_pool() -> list:
+    """Каждый проверяемый вопрос во всей базе (topic.tests.mcq + section.boundary_control.mcq) —
+    для «🎲 Случайный вопрос» на главном меню, единственного способа тренироваться сразу по всем
+    темам, а не заходить в каждую по очереди."""
+    pool = []
+    for section in tb.THERAPY["sections"]:
+        pool.extend(section["boundary_control"]["mcq"])
+        for topic in section["topics"]:
+            pool.extend(topic["tests"]["mcq"])
+    return pool
+
+
+def start_random_practice(user_id: int):
+    """Одна случайная mcq-вопрос из всей базы как разовая сессия (kind="random_practice",
+    total=1) — использует тот же движок THERAPY_QUIZ_SESSIONS/render_quiz_question, что и обычный
+    тест по теме, но не привязана к конкретной теме, поэтому НЕ пишется в therapy_progress (там
+    результат имеет смысл только в разрезе одной темы). Возвращает None, если во всей базе ещё
+    нет ни одного mcq-вопроса — вызывающий код должен явно это обработать, а не звать вслепую."""
+    _sweep_stale_quiz_sessions()
+    pool = _all_mcq_pool()
+    if not pool:
+        return None
+    session = {
+        "sid": None, "tid": None, "kind": "random_practice",
+        "questions": [random.choice(pool)], "idx": 0, "correct": 0, "total": 1,
+        "back_callback": "th:menu", "started_at": time.time(),
+    }
+    THERAPY_QUIZ_SESSIONS[user_id] = session
+    return session
 
 
 @router.callback_query(F.data.startswith("th:quiz_start:"))
@@ -634,10 +804,27 @@ async def cb_therapy_quiz_stop(callback: CallbackQuery):
     await callback.answer()
     if not session:
         await tb.safe_edit_text(
-            callback.message, get_therapy_menu_text(), parse_mode="HTML", reply_markup=get_therapy_menu_keyboard(),
+            callback.message,
+            get_therapy_menu_text(),
+            parse_mode="HTML",
+            reply_markup=get_therapy_menu_keyboard(user_id),
         )
         return
     text, keyboard = render_quiz_summary(session, aborted=True)
+    await tb.safe_edit_text(callback.message, text, parse_mode="HTML", reply_markup=keyboard)
+
+
+@router.callback_query(F.data == "th:random_practice")
+async def cb_therapy_random_practice(callback: CallbackQuery):
+    session = start_random_practice(callback.from_user.id)
+    if not session:
+        await callback.answer(
+            "Пока во всей базе нет ни одного проверяемого вопроса — появится, как только темы наполнятся.",
+            show_alert=True,
+        )
+        return
+    await callback.answer()
+    text, keyboard = render_quiz_question(session)
     await tb.safe_edit_text(callback.message, text, parse_mode="HTML", reply_markup=keyboard)
 
 
@@ -647,7 +834,38 @@ async def cb_therapy_quiz_stop(callback: CallbackQuery):
 async def cb_therapy_menu(callback: CallbackQuery):
     await callback.answer()
     await tb.safe_edit_text(
-        callback.message, get_therapy_menu_text(), parse_mode="HTML", reply_markup=get_therapy_menu_keyboard(),
+        callback.message,
+        get_therapy_menu_text(),
+        parse_mode="HTML",
+        reply_markup=get_therapy_menu_keyboard(callback.from_user.id),
+    )
+
+
+@router.callback_query(F.data == "th:favorites")
+async def cb_therapy_favorites(callback: CallbackQuery):
+    await callback.answer()
+    await tb.safe_edit_text(
+        callback.message,
+        get_favorites_text(callback.from_user.id),
+        parse_mode="HTML",
+        reply_markup=get_favorites_keyboard(callback.from_user.id),
+    )
+
+
+@router.callback_query(F.data.startswith("th:fav_toggle:"))
+async def cb_therapy_fav_toggle(callback: CallbackQuery):
+    _, _, section_id, topic_id = callback.data.split(":")
+    topic = get_topic(section_id, topic_id)
+    if not topic:
+        await callback.answer("Тема не найдена", show_alert=True)
+        return
+    is_fav = toggle_topic_favorite(callback.from_user.id, section_id, topic_id)
+    await callback.answer("⭐ Добавлено в избранное" if is_fav else "☆ Убрано из избранного")
+    await tb.safe_edit_text(
+        callback.message,
+        get_topic_text(section_id, topic_id),
+        parse_mode="HTML",
+        reply_markup=get_topic_keyboard(section_id, topic_id, callback.from_user.id),
     )
 
 
@@ -700,7 +918,7 @@ async def cb_therapy_topic(callback: CallbackQuery):
         callback.message,
         get_topic_text(section_id, topic_id),
         parse_mode="HTML",
-        reply_markup=get_topic_keyboard(section_id, topic_id),
+        reply_markup=get_topic_keyboard(section_id, topic_id, callback.from_user.id),
     )
 
 

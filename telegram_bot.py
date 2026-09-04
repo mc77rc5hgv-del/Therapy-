@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     BotCommand, BotCommandScopeChat, BotCommandScopeDefault, CallbackQuery, InlineKeyboardButton, Message,
 )
@@ -82,6 +82,7 @@ def load_stats() -> dict:
             data.setdefault("user_names", {})
             data.setdefault("user_username", {})
             data.setdefault("therapy_progress", {})
+            data.setdefault("therapy_favorites", {})
             data.setdefault("broadcast_count", 0)
             return data
         except (json.JSONDecodeError, OSError):
@@ -92,6 +93,7 @@ def load_stats() -> dict:
         "user_names": {},
         "user_username": {},
         "therapy_progress": {},
+        "therapy_favorites": {},
         "broadcast_count": 0,
     }
 
@@ -145,8 +147,8 @@ dp = Dispatcher()
 # get_main_menu() ссылается на глобальное имя therapy_handlers, которое появится в этом модуле
 # чуть ниже (после dp = Dispatcher()) — тело функции выполняется только при вызове (уже после
 # полной загрузки файла), поэтому порядок определений здесь не важен, как и в vmeda-biology-bot.
-def get_main_menu():
-    return therapy_handlers.get_therapy_menu_keyboard()
+def get_main_menu(user_id: int):
+    return therapy_handlers.get_therapy_menu_keyboard(user_id)
 
 
 def get_main_menu_text() -> str:
@@ -166,8 +168,48 @@ async def cmd_start(message: Message):
     await message.answer(
         get_main_menu_text(),
         parse_mode="HTML",
-        reply_markup=get_main_menu(),
+        reply_markup=get_main_menu(user_id),
     )
+
+
+@dp.message(Command("menu"))
+async def cmd_menu(message: Message):
+    await message.answer(get_main_menu_text(), parse_mode="HTML", reply_markup=get_main_menu(message.from_user.id))
+
+
+@dp.message(Command("progress"))
+async def cmd_progress(message: Message):
+    await message.answer(
+        therapy_handlers.get_therapy_progress_text(message.from_user.id),
+        parse_mode="HTML",
+        reply_markup=therapy_handlers.get_back_keyboard("th:menu"),
+    )
+
+
+@dp.message(Command("search"))
+async def cmd_search(message: Message):
+    ADMIN_BROADCAST_PENDING.discard(message.from_user.id)  # взаимоисключающие текстовые ожидания
+    TH_SEARCH_PENDING.add(message.from_user.id)
+    await message.answer(
+        "🔎 Напиши слово или фразу для поиска по разделам и темам «Терапии».",
+        reply_markup=therapy_handlers.get_back_keyboard("th:menu"),
+    )
+
+
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
+    lines = [
+        "ℹ️ <b>Как пользоваться ботом</b>",
+        DIVIDER,
+        "/menu — открыть главное меню разделов",
+        "/search — поиск по разделам и темам",
+        "/progress — мой прогресс",
+        "",
+        "🎲 «Случайный вопрос» на главном меню — тренировка сразу по всей базе.",
+        "⭐ На экране темы можно добавить её в избранное.",
+        "▶️ «Продолжить» на главном меню возвращает к последней открытой теме.",
+    ]
+    await message.answer("\n".join(lines), parse_mode="HTML", reply_markup=get_main_menu(message.from_user.id))
 
 
 @dp.callback_query(F.data == "back_to_main")
@@ -177,7 +219,7 @@ async def cb_back_to_main(callback: CallbackQuery):
         callback.message,
         get_main_menu_text(),
         parse_mode="HTML",
-        reply_markup=get_main_menu(),
+        reply_markup=get_main_menu(callback.from_user.id),
     )
 
 
@@ -332,6 +374,10 @@ dp.include_router(therapy_handlers.router)
 async def setup_bot_commands() -> None:
     default_commands = [
         BotCommand(command="start", description="Начать работу с ботом"),
+        BotCommand(command="menu", description="Главное меню разделов"),
+        BotCommand(command="search", description="Поиск по разделам и темам"),
+        BotCommand(command="progress", description="Мой прогресс"),
+        BotCommand(command="help", description="Как пользоваться ботом"),
     ]
     await bot.set_my_commands(default_commands, scope=BotCommandScopeDefault())
 
