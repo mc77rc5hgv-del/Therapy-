@@ -199,7 +199,25 @@ async def run():
     admin_msg = type("M", (), {"from_user": FakeUser(ADMIN_ID), "answer": msg.answer})()
     await tb.cmd_admin(admin_msg)
     assert msg.sent_texts, "админ должен получить ответ от /admin"
-    print("OK /admin: гейт по ADMIN_IDS работает")
+    text, _ = msg.sent_texts[-1]
+    # регрессия: get_admin_menu_text() как-то уже отправляла буквальные "<sid>"/"<tid>" в
+    # parse_mode="HTML"-сообщении — Telegram отклонил бы такое как незакрытые HTML-теги
+    # ("can't parse entities"), и /admin был бы сломан целиком; check_html() ловит именно это.
+    check_html(text)
+
+    # тот же текст, но уже с известным BOT_USERNAME (после старта polling в проде) — ссылка
+    # реальная, а не заглушка, но HTML всё равно обязан остаться валидным
+    tb.BOT_USERNAME = "TherapyBot"
+    try:
+        msg2 = FakeMsg()
+        admin_msg2 = type("M", (), {"from_user": FakeUser(ADMIN_ID), "answer": msg2.answer})()
+        await tb.cmd_admin(admin_msg2)
+        text2, _ = msg2.sent_texts[-1]
+        check_html(text2)
+        assert "https://t.me/TherapyBot?start=topic__" in text2
+    finally:
+        tb.BOT_USERNAME = ""
+    print("OK /admin: гейт по ADMIN_IDS работает, текст — валидный HTML (с BOT_USERNAME и без)")
 
     await check_search()
     await check_progress_and_quiz()

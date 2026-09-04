@@ -200,15 +200,14 @@ def mark_topic_opened(user_id: int, section_id: str, topic_id: str) -> None:
 
 
 def record_topic_quiz_completed(user_id: int, section_id: str, topic_id: str, correct: int, total: int) -> None:
+    """total здесь всегда > 0 — единственный вызывающий (cb_therapy_quiz_answer) вызывает это
+    только при kind="topic_tests", а такая сессия стартует только когда _quiz_questions_for()
+    вернул непустой список (см. guard в cb_therapy_quiz_start), так что quiz_best_total, если уже
+    задан, тоже всегда > 0 — деление ниже не может упасть на 0/0."""
     entry = _progress_entry(user_id, section_id, topic_id)
     entry["quiz_attempts"] += 1
     best_total = entry["quiz_best_total"]
-    best_correct = entry["quiz_best_correct"]
-    is_better = (
-        best_total is None
-        or (total > 0 and best_total > 0 and correct / total > best_correct / best_total)
-        or (total > 0 and (best_total or 0) == 0)
-    )
+    is_better = best_total is None or correct / total > entry["quiz_best_correct"] / best_total
     if is_better:
         entry["quiz_best_correct"] = correct
         entry["quiz_best_total"] = total

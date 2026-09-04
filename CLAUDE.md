@@ -234,9 +234,13 @@ constructs the same payload format rather than inventing a second one.
 calls `main()`. `build_deep_link_url(payload)` returns a real `https://t.me/<username>?start=...`
 URL once `BOT_USERNAME` is known, and an honest placeholder string (payload included, no fake
 domain) otherwise, rather than either crashing or silently emitting a broken link — `get_admin_menu_text()`
-shows the URL format (with `<sid>`/`<tid>` placeholders) so the admin can hand-build a real one for a
-specific topic when writing a broadcast (see "📣 Разослать всем" below); nothing currently builds
-this automatically into the broadcast text itself.
+shows the URL format (with `{sid}`/`{tid}` placeholders — curly braces, deliberately NOT `<sid>`/
+`<tid>`: this text is sent with `parse_mode="HTML"`, and angle brackets would be parsed as
+unclosed HTML tags, which Telegram rejects outright — `can't parse entities`, breaking `/admin`
+entirely; this exact bug shipped once and is now covered by `tests/test_therapy.py`'s `check_html()`
+call on the `/admin` response, both with and without `BOT_USERNAME` set) so the admin can hand-build
+a real one for a specific topic when writing a broadcast (see "📣 Разослать всем" below); nothing
+currently builds this automatically into the broadcast text itself.
 
 **"📤 Поделиться"** on the topic hub and section hub (`_build_share_button()`) is a `url=`
 (not `callback_data=`) button pointing at `https://t.me/share/url?url=<deep link>&text=<caption>` —

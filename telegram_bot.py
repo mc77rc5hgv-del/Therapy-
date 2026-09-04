@@ -299,8 +299,11 @@ def get_admin_menu_text() -> str:
         "Разделов курса: " + str(len(THERAPY["sections"])),
         "Тем: " + str(sum(len(s["topics"]) for s in THERAPY["sections"])),
         "",
+        # {sid}/{tid} — фигурные скобки, а не угловые: build_deep_link_url() отдаёт этот текст
+        # в message.answer(..., parse_mode="HTML") как есть, а "<sid>"/"<tid>" Telegram принял бы
+        # за незакрытые HTML-теги и отклонил бы всё сообщение целиком (can't parse entities).
         "🔗 Ссылка на тему для рассылки: "
-        + build_deep_link_url(therapy_handlers.build_topic_deep_link_payload("<sid>", "<tid>")),
+        + build_deep_link_url(therapy_handlers.build_topic_deep_link_payload("{sid}", "{tid}")),
     ]
     return "\n".join(lines)
 
